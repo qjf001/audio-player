@@ -856,6 +856,12 @@ public class MainActivity extends AppCompatActivity {
 
         // 清空列表
         listLayout.addView(makeItem.apply(getString(R.string.clear_list), () -> showClearListConfirmation()));
+        listLayout.addView(makeDivider.get());
+
+        // 关于（含打赏）
+        listLayout.addView(makeItem.apply(getString(R.string.about_menu), () -> {
+            startActivity(new Intent(MainActivity.this, AboutActivity.class));
+        }));
 
         android.widget.ScrollView scrollView = new android.widget.ScrollView(this);
         scrollView.addView(listLayout);

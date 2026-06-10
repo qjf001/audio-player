@@ -33,6 +33,10 @@
             android:name=".TagPlayerActivity"
             android:exported="false">
         </activity>
+        <activity
+            android:name=".AboutActivity"
+            android:exported="false">
+        </activity>
     </application>
 
 </manifest>

@@ -78,4 +78,25 @@
     <string name="shuffle_on">Shuffle</string>
     <string name="shuffle_off">Sequential</string>
     <string name="search_songs_hint">Search songs&#8230;</string>
+
+    <!-- About Page -->
+    <string name="about_title">About</string>
+    <string name="about_intro_title">About This Player</string>
+    <string name="about_intro_desc">A lightweight, pure local music player built for music lovers. No ads, no background services, no unnecessary permissions — just the purest music listening experience.\n\nSupports MP3, FLAC, WAV, AAC, M4A, OGG and other mainstream audio formats, with lyrics sync, category management, tag management, resume playback and more.</string>
+    <string name="about_features_title">Features</string>
+    <string name="about_features_desc">• Ad-free, focused on music playback
+• Multiple audio formats (MP3/FLAC/WAV/AAC/M4A/OGG)
+• Synchronized lyrics scrolling
+• Auto-categorize by folder, custom tags support
+• Resume playback from where you left off
+• True random shuffle algorithm
+• Built-in web browser to discover more music
+• Multi-language (Simplified/Traditional Chinese, English)
+• Edit song info and sync to file
+• Material Design with dark mode support</string>
+    <string name="about_donate_title">Support the Developer</string>
+    <string name="about_donate_desc">This player is completely free and open source. If you find it useful, feel free to scan the QR code below via WeChat to make a donation. Your support keeps me motivated to improve and update!</string>
+    <string name="about_donate_qr_desc">Scan with WeChat to donate</string>
+    <string name="about_thanks">Thank you for your support!</string>
+    <string name="about_menu">About</string>
 </resources>

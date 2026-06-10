@@ -79,4 +79,25 @@
     <string name="shuffle_on">随机</string>
     <string name="shuffle_off">顺序</string>
     <string name="search_songs_hint">搜索歌曲&#8230;</string>
+
+    <!-- About Page -->
+    <string name="about_title">关于</string>
+    <string name="about_intro_title">关于本播放器</string>
+    <string name="about_intro_desc">这是一款轻量级、纯净的本地音乐播放器，专为热爱音乐的你打造。无广告、无后台、无多余权限，只为你提供最纯粹的听歌体验。\n\n支持 MP3、FLAC、WAV、AAC、M4A、OGG 等主流音频格式，支持歌词同步显示、分类管理、标签管理、断点续播等实用功能。</string>
+    <string name="about_features_title">功能特色</string>
+    <string name="about_features_desc">• 纯净无广告，专注音乐播放
+• 支持多种音频格式（MP3/FLAC/WAV/AAC/M4A/OGG）
+• 歌词同步滚动显示
+• 按文件夹自动分类，支持自定义标签
+• 断点续播，上次听到哪里继续听
+• 真正的随机播放算法
+• 内置网页浏览器，发现更多音乐
+• 支持多语言切换（简体/繁体/英文）
+• 支持编辑歌曲信息并同步到文件
+• Material Design 风格，支持深色模式</string>
+    <string name="about_donate_title">支持开发者</string>
+    <string name="about_donate_desc">本播放器完全免费且开源。如果你觉得这个播放器好用，欢迎通过微信扫描下方二维码打赏，你的支持是我持续优化和更新的动力！</string>
+    <string name="about_donate_qr_desc">微信扫一扫，打赏开发者</string>
+    <string name="about_thanks">感谢你的使用与支持！</string>
+    <string name="about_menu">关于</string>
 </resources>

@@ -1,0 +1,12 @@
+<resources>
+    <color name="colorPrimary">#F44336</color>
+    <color name="colorPrimaryDark">#F44336</color>
+    <color name="colorAccent">#03DAC5</color>
+    <color name="player_background">#2C3E50</color>
+    <color name="player_text_primary">#FFFFFF</color>
+    <color name="player_text_secondary">#BDC3C7</color>
+
+    <!-- Theme Adaptive Colors -->
+    <color name="search_box_background">#F2F2F2</color>
+    <color name="main_background">#FFFFFF</color>
+</resources>

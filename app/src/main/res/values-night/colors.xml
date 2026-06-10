@@ -1,0 +1,9 @@
+<resources>
+    <color name="colorPrimary">#F44336</color>
+    <color name="colorPrimaryDark">#B71C1C</color>
+    <color name="colorAccent">#03DAC5</color>
+
+    <!-- Theme Adaptive Colors for Dark Mode -->
+    <color name="search_box_background">#333333</color>
+    <color name="main_background">#121212</color>
+</resources>

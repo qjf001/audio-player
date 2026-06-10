@@ -1,0 +1,11 @@
+<resources>
+    <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="colorAccent">@color/colorAccent</item>
+        <!-- 设置状态栏颜色 -->
+        <item name="android:statusBarColor">@color/colorPrimary</item>
+        <!-- 强制状态栏使用浅色（白色）图标/文字，适用于深色背景 -->
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

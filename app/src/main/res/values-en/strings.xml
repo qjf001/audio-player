@@ -99,4 +99,12 @@
     <string name="about_donate_qr_desc">Scan with WeChat to donate</string>
     <string name="about_thanks">Thank you for your support!</string>
     <string name="about_menu">About</string>
+
+    <!-- Notification -->
+    <string name="notification_channel_name">Music Playback</string>
+    <string name="notification_channel_desc">Shows current playback state and controls</string>
+
+    <string name="battery_optimization_title">Battery Optimization</string>
+    <string name="battery_optimization_message">To ensure continuous background playback, it is recommended to disable battery optimization for this app.</string>
+    <string name="go_set">Go to Settings</string>
 </resources>

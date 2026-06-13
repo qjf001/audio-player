@@ -6,6 +6,7 @@ import android.media.MediaPlayer;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 
 import java.io.File;
 import java.io.IOException;
@@ -80,6 +81,9 @@ public class MusicPlayer {
 
             mediaPlayer = createNewMediaPlayer();
             final MediaPlayer newPlayer = mediaPlayer;
+            
+            // 设置唤醒模式，保证后台播放时 CPU 不进入休眠
+            newPlayer.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK);
 
             if (oldPlayer != null) {
                 new Thread(() -> {

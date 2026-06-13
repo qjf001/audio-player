@@ -100,4 +100,12 @@
     <string name="about_donate_qr_desc">微信扫一扫，打赏开发者</string>
     <string name="about_thanks">感谢你的使用与支持！</string>
     <string name="about_menu">关于</string>
+
+    <!-- Notification -->
+    <string name="notification_channel_name">音乐播放</string>
+    <string name="notification_channel_desc">显示当前播放状态和控制按钮</string>
+
+    <string name="battery_optimization_title">电池优化建议</string>
+    <string name="battery_optimization_message">为了保证在后台长时间播放不被系统中断，建议将本应用设为“不进行电池优化”。</string>
+    <string name="go_set">去设置</string>
 </resources>

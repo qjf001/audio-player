@@ -665,8 +665,12 @@ public class TagPlayerActivity extends AppCompatActivity {
                 int current = musicPlayer.getCurrentPosition();
                 int duration = musicPlayer.getDuration();
                 if (duration > 0) {
-                    seekMiniProgress.setProgress((int) ((long) current * 1000 / duration));
+                    seekProgress.setProgress(current);
+                    seekMiniProgress.setProgress(current);
                 }
+                textCurrentTime.setText(formatTime(current));
+                int l = lrcAdapter.updateCurrentLine(current);
+                if (l != -1) recyclerLyrics.smoothScrollToPosition(l);
                 progressHandler.postDelayed(this, 200);
             }
         }
@@ -686,12 +690,9 @@ public class TagPlayerActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        // 不再在 onPause 中暂停播放，允许后台播放
+        // 只停止进度更新
         stopProgressUpdater();
-        if (musicPlayer != null && musicPlayer.isPlaying()) {
-            musicPlayer.pause();
-            btnPlayPause.setImageResource(R.drawable.ic_play_vector);
-            btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector);
-        }
     }
 
     @Override

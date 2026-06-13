@@ -1,11 +1,12 @@
 package com.musicplayer.app;
 
 import android.Manifest;
-import android.content.pm.PackageManager;
-import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
+import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.content.BroadcastReceiver;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -17,6 +18,7 @@ import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.IBinder;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.Settings;
@@ -53,6 +55,7 @@ import com.musicplayer.app.model.LrcLine;
 import com.musicplayer.app.model.Song;
 import com.musicplayer.app.model.Tag;
 import com.musicplayer.app.player.MusicPlayer;
+import com.musicplayer.app.player.MusicPlayerService;
 import com.musicplayer.app.player.TrueRandomShuffler;
 import com.musicplayer.app.storage.MusicDirectoryManager;
 import com.musicplayer.app.storage.TagManager;
@@ -103,6 +106,8 @@ public class MainActivity extends AppCompatActivity {
     private int currentSongIndex = -1;
     private int consecutiveFailures = 0;
     private MusicPlayer musicPlayer;
+    private MusicPlayerService musicService;
+    private boolean serviceBound = false;
     private TagManager tagManager;
     private MusicDirectoryManager directoryManager;
     private AudioManager audioManager;
@@ -110,14 +115,61 @@ public class MainActivity extends AppCompatActivity {
     private boolean isPlaying = false;
     private boolean isSearchVisible = false;
     
-    private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() {
+    // 监听 Service 的通知栏按钮和 Service 主动暂停事件
+    private final MusicPlayerService.ServiceCallback serviceCallback = action -> runOnUiThread(() -> {
+        switch (action) {
+            case MusicPlayerService.ACTION_PLAY_PAUSE:
+                togglePlayPause();
+                break;
+            case MusicPlayerService.ACTION_NEXT:
+                consecutiveFailures = 0;
+                playNext();
+                break;
+            case MusicPlayerService.ACTION_PREV:
+                playPrevious();
+                break;
+            case MusicPlayerService.ACTION_STOP:
+                if (musicPlayer != null) musicPlayer.stop();
+                isPlaying = false;
+                updatePlayPauseUI();
+                updateMediaSessionState();
+                break;
+            case MusicPlayerService.ACTION_PAUSED_BY_SERVICE:
+                // 耳机断开等情况，Service 已暂停播放，此处只更新 UI
+                isPlaying = false;
+                updatePlayPauseUI();
+                updateMediaSessionState();
+                break;
+        }
+    });
+
+    private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
-        public void onReceive(Context context, Intent intent) {
-            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(intent.getAction())) {
-                if (isPlaying) {
-                    togglePlayPause();
-                }
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            MusicPlayerService.MusicBinder binder = (MusicPlayerService.MusicBinder) service;
+            musicService = binder.getService();
+            musicPlayer = musicService.getMusicPlayer();
+            mediaSession = musicService.getMediaSession();
+            serviceBound = true;
+
+            musicService.setCallback(serviceCallback);
+
+            // 初始化播放器和加载歌曲（依赖 musicPlayer / mediaSession）
+            initPlayer();
+            initMediaSession();
+            loadSongs();
+
+            // 如果 Service 正在播放，同步 UI
+            if (musicPlayer.isPlaying()) {
+                isPlaying = true;
+                updatePlayPauseUI();
             }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            serviceBound = false;
+            musicService = null;
         }
     };
 
@@ -146,21 +198,47 @@ public class MainActivity extends AppCompatActivity {
         
         tagManager = new TagManager(this);
         directoryManager = new MusicDirectoryManager(this);
-        musicPlayer = new MusicPlayer();
+        // musicPlayer 将在 Service 绑定后获取
 
         // 首次启动：自动将扫描目录设为系统 Music 目录
         handleFirstLaunch();
-        
-        initMediaSession();
-        initViews();
-        initPlayer();
-        
-        // 注册蓝牙/耳机断开广播监听
-        registerReceiver(noisyReceiver, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
 
+        initViews();
+
+        // 注册耳机断开广播监听（已迁移到 Service，Activity 不再注册）
         checkPermissions();
-        loadSongs();
         setupDirectoryObserver();
+
+        // 启动并绑定音乐播放服务
+        Intent serviceIntent = new Intent(this, MusicPlayerService.class);
+        startService(serviceIntent);
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
+
+        checkBatteryOptimizations();
+    }
+    
+    private void checkBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            String packageName = getPackageName();
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                new AlertDialog.Builder(this)
+                        .setTitle(R.string.battery_optimization_title)
+                        .setMessage(R.string.battery_optimization_message)
+                        .setPositiveButton(R.string.go_set, (dialog, which) -> {
+                            try {
+                                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                                intent.setData(Uri.parse("package:" + packageName));
+                                startActivity(intent);
+                            } catch (Exception e) {
+                                Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                                startActivity(intent);
+                            }
+                        })
+                        .setNegativeButton(R.string.cancel, null)
+                        .show();
+            }
+        }
     }
     
     private void initViews() {
@@ -251,7 +329,7 @@ public class MainActivity extends AppCompatActivity {
         
         seekProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { if (fromUser) musicPlayer.seekTo(progress); }
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { if (fromUser && musicPlayer != null) musicPlayer.seekTo(progress); }
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override
@@ -408,7 +486,7 @@ public class MainActivity extends AppCompatActivity {
             public void onCompletion() {
                 runOnUiThread(() -> {
                     isPlaying = false;
-                                
+                    
                     // 歌曲播完，重置进度为0（所有分类）
                     if (lastPlayedSong != null) {
                         String cat = lastPlayedSong.getCategory();
@@ -420,8 +498,8 @@ public class MainActivity extends AppCompatActivity {
                     }
             
                     updateMediaSessionState();
-                    btnPlayPause.setImageResource(R.drawable.ic_play_vector);
-                    btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector);
+                    updatePlayPauseUI();
+                    if (musicService != null) musicService.notifyPlaybackPaused();
                     consecutiveFailures = 0;
                     playNext();
                 });
@@ -435,8 +513,7 @@ public class MainActivity extends AppCompatActivity {
                     if (consecutiveFailures >= currentSongList.size()) {
                         Toast.makeText(MainActivity.this, R.string.all_songs_failed, Toast.LENGTH_SHORT).show();
                         isPlaying = false;
-                        btnPlayPause.setImageResource(R.drawable.ic_play_vector);
-                        btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector);
+                        updatePlayPauseUI();
                     } else {
                         playNext();
                     }
@@ -453,6 +530,12 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
         });
+    }
+
+    /** 更新播放/暂停按钮图标（抽取公共方法） */
+    private void updatePlayPauseUI() {
+        btnPlayPause.setImageResource(isPlaying ? R.drawable.ic_pause_vector : R.drawable.ic_play_vector);
+        btnMiniPlayPause.setImageResource(isPlaying ? R.drawable.ic_pause_vector : R.drawable.ic_play_vector);
     }
 
     private void updateDirectoryDisplay() {
@@ -921,8 +1004,8 @@ public class MainActivity extends AppCompatActivity {
             allSongs.clear(); currentSongList.clear(); currentSongIndex = -1; isPlaying = false; musicPlayer.stop();
             songAdapter.updateSongs(currentSongList);
             textSongInfo.setText(R.string.no_song_playing);
-            btnPlayPause.setImageResource(R.drawable.ic_play_vector);
-            btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector);
+            updatePlayPauseUI();
+            if (musicService != null) musicService.notifyPlaybackStopped();
             updateTagSpinner(); updateDirectoryDisplay();
         }).setNegativeButton(R.string.cancel, null).show();
     }
@@ -1149,8 +1232,11 @@ public class MainActivity extends AppCompatActivity {
         isPlaying = true;
         updateMediaSessionMetadata(s);
         updateMediaSessionState();
-        btnPlayPause.setImageResource(R.drawable.ic_pause_vector);
-        btnMiniPlayPause.setImageResource(R.drawable.ic_pause_vector);
+        updatePlayPauseUI();
+        // 通知 Service 更新前台通知
+        if (musicService != null) {
+            musicService.notifyPlaybackStarted(s.getTitle(), art);
+        }
     }
 
     /** 同步加载歌词（可在后台线程调用） */
@@ -1257,15 +1343,15 @@ public class MainActivity extends AppCompatActivity {
         if (isPlaying) { 
             musicPlayer.pause(); 
             isPlaying = false; 
-            btnPlayPause.setImageResource(R.drawable.ic_play_vector); 
-            btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector); 
+            updatePlayPauseUI(); 
+            if (musicService != null) musicService.notifyPlaybackPaused();
         }
         else {
             if (currentSongIndex >= 0 && musicPlayer.isPrepared()) { 
                 musicPlayer.resume(); 
                 isPlaying = true; 
-                btnPlayPause.setImageResource(R.drawable.ic_pause_vector); 
-                btnMiniPlayPause.setImageResource(R.drawable.ic_pause_vector); 
+                updatePlayPauseUI(); 
+                if (musicService != null) musicService.notifyPlaybackResumed();
             }
             else if (!currentSongList.isEmpty()) playSong(currentSongList.get(Math.max(0, currentSongIndex)));
         }
@@ -1283,7 +1369,8 @@ public class MainActivity extends AppCompatActivity {
     private void playNext() { 
         if (currentSongList.isEmpty()) {
             isPlaying = false; 
-            btnPlayPause.setImageResource(R.drawable.ic_play_vector);
+            updatePlayPauseUI();
+            if (musicService != null) musicService.notifyPlaybackStopped();
             return;
         }
 
@@ -1660,9 +1747,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initMediaSession() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            mediaSession = new MediaSession(this, "MusicPlayer");
-            mediaSession.setCallback(new MediaSession.Callback() {
+        if (mediaSession == null) return;
+        mediaSession.setCallback(new MediaSession.Callback() {
                 @Override
                 public void onPlay() { togglePlayPause(); }
                 @Override
@@ -1676,9 +1762,8 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onSeekTo(long pos) { musicPlayer.seekTo((int)pos); }
             });
-            mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
-            mediaSession.setActive(true);
-        }
+        mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        mediaSession.setActive(true);
     }
 
     private void updateMediaSessionMetadata(Song s) {
@@ -1747,16 +1832,30 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() { 
         savePlaybackState();
+
+        // 解绑 Service（不释放 MusicPlayer，它属于 Service）
+        if (serviceBound) {
+            if (musicService != null) musicService.setCallback(null);
+            try { unbindService(serviceConnection); } catch (Exception ignored) {}
+            serviceBound = false;
+        }
+        // 如果未在播放，通知 Service 可以停止
+        if (musicService != null && !isPlaying) {
+            musicService.notifyPlaybackStopped();
+            musicService.stopSelf();
+        }
+        musicService = null;
+
         super.onDestroy(); 
         if (directoryObserver != null) {
             directoryObserver.stopWatching();
             directoryObserver = null;
         }
-        try {
-            unregisterReceiver(noisyReceiver);
-        } catch (Exception e) {}
-        if (mediaSession != null) mediaSession.release(); 
-        musicPlayer.release(); 
+        // 耳机断开监听已迁移到 Service，此处不再需要注销
+        if (mediaSession != null) {
+            // MediaSession 属于 Service，Activity 不再释放
+        }
+        // MusicPlayer 属于 Service，Activity 不再释放
     }
 
     private void setupDirectoryObserver() {

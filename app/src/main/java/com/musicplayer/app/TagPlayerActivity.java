@@ -1,9 +1,13 @@
 package com.musicplayer.app;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -32,6 +36,7 @@ import com.musicplayer.app.model.LrcLine;
 import com.musicplayer.app.model.Song;
 import com.musicplayer.app.model.Tag;
 import com.musicplayer.app.player.MusicPlayer;
+import com.musicplayer.app.player.MusicPlayerService;
 import com.musicplayer.app.player.TrueRandomShuffler;
 import com.musicplayer.app.storage.TagManager;
 
@@ -88,6 +93,10 @@ public class TagPlayerActivity extends AppCompatActivity {
     private SongAdapter songAdapter;
     private AudioManager audioManager;
     private Handler progressHandler = new Handler(Looper.getMainLooper());
+    
+    // Service connection for saving playback state
+    private MusicPlayerService musicService;
+    private boolean serviceBound = false;
 
     private List<Tag> userTags = new ArrayList<>();
     private List<Song> originalTagSongs = new ArrayList<>();
@@ -117,11 +126,15 @@ public class TagPlayerActivity extends AppCompatActivity {
         setContentView(R.layout.activity_tag_player);
 
         tagManager = new TagManager(this);
-        musicPlayer = new MusicPlayer();
+        // musicPlayer will be obtained from Service to ensure unified control
+        
+        // 启动并绑定Service，共享播放器
+        Intent serviceIntent = new Intent(this, MusicPlayerService.class);
+        startService(serviceIntent);
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
 
         initViews();
         initBottomSheet();
-        initPlayer();
         loadTags();
     }
 
@@ -510,6 +523,18 @@ public class TagPlayerActivity extends AppCompatActivity {
         if (song == null || song.getPath() == null) return;
         currentSongIndex = index;
         musicPlayer.play(this, song.getPath());
+        
+        String art = song.getArtist();
+        if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
+        
+        // 保存播放状态到Service，用于app重启后蓝牙耳机控制
+        savePlaybackStateToService(song.getPath());
+        
+        // 通知 Service 更新前台通知和 MediaSession
+        if (musicService != null) {
+            musicService.notifyPlaybackStarted(song.getTitle(), art);
+        }
+        
         bottomSheetPlayer.setVisibility(View.VISIBLE);
         sheetBehavior.setHideable(false);
         sheetBehavior.setState(BottomSheetBehavior.STATE_COLLAPSED);
@@ -520,14 +545,18 @@ public class TagPlayerActivity extends AppCompatActivity {
     private void togglePlayPause() {
         if (musicPlayer.isPlaying()) {
             musicPlayer.pause();
-            btnPlayPause.setImageResource(R.drawable.ic_play_vector);
-            btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector);
-            stopProgressUpdater();
+            updatePlayPauseUI();
+            if (musicService != null) {
+                musicService.notifyPlaybackPaused();
+                musicService.notifyUserPaused();
+            }
         } else if (musicPlayer.isPrepared()) {
             musicPlayer.resume();
-            btnPlayPause.setImageResource(R.drawable.ic_pause_vector);
-            btnMiniPlayPause.setImageResource(R.drawable.ic_pause_vector);
-            startProgressUpdater();
+            updatePlayPauseUI();
+            if (musicService != null) {
+                musicService.notifyPlaybackResumed();
+                musicService.notifyUserResumed();
+            }
         } else if (currentSongIndex >= 0) {
             playSong(currentSongIndex);
         }
@@ -684,6 +713,86 @@ public class TagPlayerActivity extends AppCompatActivity {
     private void stopProgressUpdater() {
         progressHandler.removeCallbacks(progressRunnable);
     }
+    
+    // ==================== Service Connection ====================
+    
+    private final ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            MusicPlayerService.MusicBinder binder = (MusicPlayerService.MusicBinder) service;
+            musicService = binder.getService();
+            musicPlayer = musicService.getMusicPlayer();
+            serviceBound = true;
+            
+            // 重要：设置 Service 回调，让蓝牙按键可以控制当前 Activity 的逻辑
+            musicService.setCallback(serviceCallback);
+            
+            // 初始化播放监听器（使用共享的播放器）
+            initPlayer();
+            
+            // 如果已经在播放，同步 UI
+            if (musicPlayer.isPlaying()) {
+                syncPlayerUI();
+            }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            serviceBound = false;
+            musicService = null;
+        }
+    };
+    
+    /** 监听来自 Service 的控制动作（蓝牙、通知栏等） */
+    private final MusicPlayerService.ServiceCallback serviceCallback = action -> runOnUiThread(() -> {
+        switch (action) {
+            case MusicPlayerService.ACTION_PLAY_PAUSE:
+                updatePlayPauseUI();
+                break;
+            case MusicPlayerService.ACTION_NEXT:
+                playNext();
+                break;
+            case MusicPlayerService.ACTION_PREV:
+                playPrev();
+                break;
+            case MusicPlayerService.ACTION_STOP:
+                updatePlayPauseUI();
+                break;
+            case MusicPlayerService.ACTION_PAUSED_BY_SERVICE:
+                updatePlayPauseUI();
+                break;
+        }
+    });
+
+    private void syncPlayerUI() {
+        int d = musicPlayer.getDuration();
+        seekProgress.setMax(d);
+        seekMiniProgress.setMax(d);
+        textTotalTime.setText(formatTime(d));
+        updatePlayPauseUI();
+        updatePlayerInfo();
+        bottomSheetPlayer.setVisibility(View.VISIBLE);
+        sheetBehavior.setHideable(false);
+        startProgressUpdater();
+    }
+
+    private void updatePlayPauseUI() {
+        boolean playing = musicPlayer != null && musicPlayer.isPlaying();
+        int icon = playing ? R.drawable.ic_pause_vector : R.drawable.ic_play_vector;
+        btnPlayPause.setImageResource(icon);
+        btnMiniPlayPause.setImageResource(icon);
+        if (playing) startProgressUpdater(); else stopProgressUpdater();
+    }
+
+    /** 保存播放状态到Service，用于app重启后蓝牙耳机控制 */
+    private void savePlaybackStateToService(String path) {
+        if (serviceBound && musicService != null && currentSongIndex >= 0 && currentSongIndex < playOrder.size()) {
+            Song s = playOrder.get(currentSongIndex);
+            String art = s.getArtist();
+            if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
+            musicService.updateLastPlayedPath(path, s.getTitle(), art, 0);
+        }
+    }
 
     // ==================== Lifecycle ====================
 
@@ -698,6 +807,10 @@ public class TagPlayerActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 恢复 Service 回调，确保蓝牙按键能控制当前 Activity
+        if (serviceBound && musicService != null) {
+            musicService.setCallback(serviceCallback);
+        }
         if (musicPlayer != null && musicPlayer.isPrepared() && musicPlayer.isPlaying()) {
             btnPlayPause.setImageResource(R.drawable.ic_pause_vector);
             btnMiniPlayPause.setImageResource(R.drawable.ic_pause_vector);
@@ -709,10 +822,15 @@ public class TagPlayerActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         stopProgressUpdater();
-        if (musicPlayer != null) {
-            musicPlayer.stop();
-            musicPlayer.release();
-            musicPlayer = null;
+        
+        // 解绑 Service
+        if (serviceBound) {
+            if (musicService != null) musicService.setCallback(null);
+            try { unbindService(serviceConnection); } catch (Exception ignored) {}
+            serviceBound = false;
         }
+        
+        // 统一由 Service 管理播放器生命周期，此处不 release
+        musicPlayer = null;
     }
 }

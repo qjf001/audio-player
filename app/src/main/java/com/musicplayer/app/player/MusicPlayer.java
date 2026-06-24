@@ -17,6 +17,7 @@ public class MusicPlayer {
     private MediaPlayer mediaPlayer;
     private OnPlaybackListener listener;
     private volatile boolean isPrepared;
+    private String currentPath;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final AtomicInteger playSession = new AtomicInteger(0);
     private static final long PROGRESS_INTERVAL_MS = 200;
@@ -61,6 +62,7 @@ public class MusicPlayer {
     public void play(Context context, String path) {
         try {
             if (path == null || path.isEmpty()) throw new IOException("无效路径");
+            this.currentPath = path;
 
             // 停止其他 MusicPlayer 实例的播放（全局唯一播放保证）
             if (activeInstance != null && activeInstance != this) {
@@ -171,6 +173,7 @@ public class MusicPlayer {
      */
     public int trySwapToPreloaded(String path) {
         if (!preloadReady || nextPlayer == null || !path.equals(preloadedPath)) return -1;
+        this.currentPath = path;
 
         final int session = playSession.incrementAndGet();
         stopProgressUpdates();
@@ -304,6 +307,10 @@ public class MusicPlayer {
             } catch (Exception ignored) {}
         }
         return 0;
+    }
+
+    public String getCurrentPath() {
+        return currentPath;
     }
 
     public void release() {

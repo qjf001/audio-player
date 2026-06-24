@@ -117,8 +117,10 @@ public class MainActivity extends AppCompatActivity {
     
     // 监听 Service 的通知栏按钮和 Service 主动暂停事件
     private final MusicPlayerService.ServiceCallback serviceCallback = action -> runOnUiThread(() -> {
+        android.util.Log.d("ServiceCallback", "Received action: " + action + ", isPlaying=" + isPlaying + ", isPrepared=" + (musicPlayer != null && musicPlayer.isPrepared()) + ", currentIndex=" + currentSongIndex + ", listSize=" + currentSongList.size());
         switch (action) {
             case MusicPlayerService.ACTION_PLAY_PAUSE:
+                android.util.Log.d("ServiceCallback", "Calling togglePlayPause");
                 togglePlayPause();
                 break;
             case MusicPlayerService.ACTION_NEXT:
@@ -592,12 +594,20 @@ public class MainActivity extends AppCompatActivity {
 
     private void savePlaybackState() {
         if (lastPlayedSong != null) {
-            int pos = musicPlayer.getCurrentPosition();
+            int pos = (musicPlayer != null && musicPlayer.isPrepared()) ? musicPlayer.getCurrentPosition() : 0;
             // 使用 commit() 同步写入，确保进程被杀时数据不丢失
             getSharedPreferences("player_prefs", MODE_PRIVATE).edit()
                 .putLong("last_song_id", lastPlayedSong.getId())
                 .putInt("last_position", pos)
                 .commit();
+            
+            // 同步保存到 Service，确保蓝牙控制能接续
+            if (musicService != null) {
+                String art = lastPlayedSong.getArtist();
+                if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
+                musicService.updateLastPlayedPath(lastPlayedSong.getPath(), lastPlayedSong.getTitle(), art, pos);
+            }
+
             // 非音乐类同时保存到数据库（用于列表进度条显示）
             String cat = lastPlayedSong.getCategory();
             if (cat != null && !cat.equals("音乐")) {
@@ -1261,6 +1271,14 @@ public class MainActivity extends AppCompatActivity {
     /** 启动播放并触发下一首预加载 */
     private void startPlayback(Song s) {
         musicPlayer.play(this, s.getPath());
+        
+        // 保存歌曲路径到Service，用于app重启后恢复
+        if (musicService != null) {
+            String art = s.getArtist();
+            if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
+            musicService.updateLastPlayedPath(s.getPath(), s.getTitle(), art, 0);
+        }
+        
         triggerPreloadNext();
     }
 
@@ -1344,18 +1362,28 @@ public class MainActivity extends AppCompatActivity {
             musicPlayer.pause(); 
             isPlaying = false; 
             updatePlayPauseUI(); 
-            if (musicService != null) musicService.notifyPlaybackPaused();
+            if (musicService != null) {
+                musicService.notifyPlaybackPaused();
+                musicService.notifyUserPaused(); // 标记为用户主动暂停
+            }
         }
         else {
             if (currentSongIndex >= 0 && musicPlayer.isPrepared()) { 
                 musicPlayer.resume(); 
                 isPlaying = true; 
                 updatePlayPauseUI(); 
-                if (musicService != null) musicService.notifyPlaybackResumed();
+                if (musicService != null) {
+                    musicService.notifyPlaybackResumed();
+                    musicService.notifyUserResumed(); // 标记为用户主动恢复
+                }
             }
             else if (!currentSongList.isEmpty()) playSong(currentSongList.get(Math.max(0, currentSongIndex)));
         }
         updateMediaSessionState();
+        // 确保 MediaSession 在有内容时处于活跃状态
+        if (musicService != null && mediaSession != null && musicPlayer.isPrepared()) {
+            mediaSession.setActive(true);
+        }
     }
 
     private void playPrevious() {
@@ -1747,23 +1775,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initMediaSession() {
+        // MediaSession 的 Callback 已经在 MusicPlayerService 中设置
+        // Activity 不需要重复设置，这样即使 Activity 在后台被销毁，蓝牙耳机也能正常控制
         if (mediaSession == null) return;
-        mediaSession.setCallback(new MediaSession.Callback() {
-                @Override
-                public void onPlay() { togglePlayPause(); }
-                @Override
-                public void onPause() { togglePlayPause(); }
-                @Override
-                public void onSkipToNext() { consecutiveFailures = 0; playNext(); }
-                @Override
-                public void onSkipToPrevious() { playPrevious(); }
-                @Override
-                public void onStop() { musicPlayer.stop(); isPlaying = false; updateMediaSessionState(); }
-                @Override
-                public void onSeekTo(long pos) { musicPlayer.seekTo((int)pos); }
-            });
+        
+        // 设置标志位
         mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
-        mediaSession.setActive(true);
     }
 
     private void updateMediaSessionMetadata(Song s) {
@@ -1826,7 +1843,20 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onStop() {
         super.onStop();
-        savePlaybackState();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 恢复 Service 回调，确保蓝牙按键能控制当前 Activity
+        if (serviceBound && musicService != null) {
+            musicService.setCallback(serviceCallback);
+            // 同步播放状态
+            if (musicPlayer != null && musicPlayer.isPlaying()) {
+                isPlaying = true;
+                updatePlayPauseUI();
+            }
+        }
     }
 
     @Override

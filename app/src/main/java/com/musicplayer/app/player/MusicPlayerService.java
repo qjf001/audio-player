@@ -11,7 +11,9 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.media.AudioManager;
+import android.media.MediaMetadata;
 import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
@@ -21,6 +23,8 @@ import androidx.core.app.NotificationCompat;
 
 import com.musicplayer.app.MainActivity;
 import com.musicplayer.app.R;
+
+import java.io.File;
 
 /**
  * 前台服务：保证音乐在后台持续播放，防止系统杀掉进程。
@@ -49,6 +53,18 @@ public class MusicPlayerService extends Service {
     private String currentTitle = "";
     private String currentArtist = "";
     private boolean isPlaying = false;
+    
+    // 播放状态追踪：区分用户主动暂停和系统暂停(电话/音频焦点)
+    // true=用户主动暂停(不应该自动恢复), false=系统暂停(可以恢复)
+    private boolean isPausedByUser = false;
+    // 记录失去焦点前是否在播放
+    private boolean wasPlayingBeforeFocusLoss = false;
+    
+    // 保存最后播放的歌曲路径，用于app重启后恢复
+    private String lastPlayedPath = "";
+    private String lastPlayedTitle = "";
+    private String lastPlayedArtist = "";
+    private int lastPlayedPosition = 0;
 
     // Activity 传递的播放监听器
     private MusicPlayer.OnPlaybackListener activityListener;
@@ -76,11 +92,23 @@ public class MusicPlayerService extends Service {
         musicPlayer = new MusicPlayer();
         notificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        
+        // 加载保存的播放状态
+        loadPlaybackState();
+        
         createNotificationChannel();
         initMediaSession();
         setupPlaybackListener();
         registerNotificationReceiver();
         registerNoisyReceiver();
+
+        // 关键修复：如果有保存的播放记录，激活 MediaSession 并设置初始状态为 PAUSED
+        // 这样蓝牙耳机才能识别到播放控制器，并允许点击“播放”按钮
+        if (!lastPlayedPath.isEmpty() && mediaSession != null) {
+            mediaSession.setActive(true);
+            updatePlaybackState();
+            android.util.Log.d("MusicPlayerService", "MediaSession activated on create with lastPath=" + lastPlayedPath);
+        }
     }
 
     @Override
@@ -128,6 +156,15 @@ public class MusicPlayerService extends Service {
         currentTitle = title;
         currentArtist = artist;
         isPlaying = true;
+        isPausedByUser = false;
+        
+        // 激活 MediaSession，更新状态和元数据
+        if (mediaSession != null) {
+            mediaSession.setActive(true);
+            updatePlaybackState();
+            updateMediaMetadata(title, artist, musicPlayer.getDuration());
+        }
+        
         if (!isForeground) {
             Notification notification = buildNotification();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -138,6 +175,50 @@ public class MusicPlayerService extends Service {
             isForeground = true;
         } else {
             notificationManager.notify(NOTIFICATION_ID, buildNotification());
+        }
+    }
+    
+    /** 保存播放状态到SharedPreferences */
+    private void savePlaybackState() {
+        if (lastPlayedPath == null || lastPlayedPath.isEmpty()) return;
+        android.content.SharedPreferences prefs = getSharedPreferences("service_playback_prefs", MODE_PRIVATE);
+        prefs.edit()
+            .putString("last_played_path", lastPlayedPath)
+            .putString("last_played_title", lastPlayedTitle)
+            .putString("last_played_artist", lastPlayedArtist)
+            .putInt("last_played_position", lastPlayedPosition)
+            .apply();
+    }
+    
+    /** 更新最后播放的歌曲信息（由 Activity 调用） */
+    public void updateLastPlayedPath(String path, String title, String artist, int position) {
+        if (path == null || path.isEmpty()) return;
+        lastPlayedPath = path;
+        lastPlayedTitle = title;
+        lastPlayedArtist = artist;
+        lastPlayedPosition = position;
+        
+        // 持久化到 SharedPreferences
+        android.content.SharedPreferences prefs = getSharedPreferences("service_playback_prefs", MODE_PRIVATE);
+        prefs.edit()
+            .putString("last_played_path", path)
+            .putString("last_played_title", title)
+            .putString("last_played_artist", artist)
+            .putInt("last_played_position", position)
+            .apply();
+    }
+    
+    /** 加载保存的播放状态 */
+    private void loadPlaybackState() {
+        android.content.SharedPreferences prefs = getSharedPreferences("service_playback_prefs", MODE_PRIVATE);
+        lastPlayedPath = prefs.getString("last_played_path", "");
+        lastPlayedTitle = prefs.getString("last_played_title", "");
+        lastPlayedArtist = prefs.getString("last_played_artist", "");
+        lastPlayedPosition = prefs.getInt("last_played_position", 0);
+        
+        if (!lastPlayedPath.isEmpty()) {
+            currentTitle = lastPlayedTitle;
+            currentArtist = lastPlayedArtist;
         }
     }
 
@@ -153,6 +234,7 @@ public class MusicPlayerService extends Service {
     /** 播放暂停 */
     public void notifyPlaybackPaused() {
         isPlaying = false;
+        updatePlaybackState();
         if (isForeground) {
             notificationManager.notify(NOTIFICATION_ID, buildNotification());
         }
@@ -164,6 +246,7 @@ public class MusicPlayerService extends Service {
             return;
         }
         isPlaying = true;
+        updatePlaybackState();
         if (isForeground) {
             notificationManager.notify(NOTIFICATION_ID, buildNotification());
         }
@@ -172,7 +255,15 @@ public class MusicPlayerService extends Service {
     /** 播放停止：移除前台通知 */
     public void notifyPlaybackStopped() {
         isPlaying = false;
+        isPausedByUser = true;
+        updatePlaybackState();
         abandonAudioFocus();
+        
+        // 停用 MediaSession
+        if (mediaSession != null) {
+            mediaSession.setActive(false);
+        }
+        
         if (isForeground) {
             stopForeground(true);
             isForeground = false;
@@ -182,12 +273,23 @@ public class MusicPlayerService extends Service {
     /** 通用播放状态更新 */
     public void updatePlayState(boolean playing) {
         isPlaying = playing;
+        updatePlaybackState();
         if (isForeground) {
             notificationManager.notify(NOTIFICATION_ID, buildNotification());
         }
     }
 
     public boolean isForegroundRunning() { return isForeground; }
+    
+    /** 通知 Service 用户主动暂停（用于区分系统暂停） */
+    public void notifyUserPaused() {
+        isPausedByUser = true;
+    }
+    
+    /** 通知 Service 用户主动恢复播放 */
+    public void notifyUserResumed() {
+        isPausedByUser = false;
+    }
 
     // ======================== 内部实现 ========================
 
@@ -197,6 +299,8 @@ public class MusicPlayerService extends Service {
             @Override
             public void onPrepared() {
                 isPlaying = true;
+                updatePlaybackState();
+                updateMediaMetadata(currentTitle, currentArtist, musicPlayer.getDuration());
                 if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());
                 if (activityListener != null) activityListener.onPrepared();
             }
@@ -233,7 +337,114 @@ public class MusicPlayerService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             mediaSession = new MediaSession(this, "MusicPlayerService");
             mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
-            mediaSession.setActive(true);
+            
+            // 关键修复：在Service中设置MediaSession Callback，完全独立处理蓝牙和通知按键
+            mediaSession.setCallback(new MediaSession.Callback() {
+                @Override
+                public void onPlay() {
+                    android.util.Log.d("MediaSession", "onPlay - isPrepared=" + musicPlayer.isPrepared() + ", isPlaying=" + musicPlayer.isPlaying());
+                    
+                    if (musicPlayer.isPlaying()) return;
+                    
+                    if (musicPlayer.isPrepared()) {
+                        musicPlayer.resume();
+                        isPlaying = true;
+                        isPausedByUser = false;
+                        updatePlaybackState();
+                        if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());
+                        if (callback != null) callback.onServiceAction(ACTION_PLAY_PAUSE);
+                    } else if (!lastPlayedPath.isEmpty()) {
+                        // app重启后的场景：使用保存的路径直接开始播放
+                        try {
+                            File file = new File(lastPlayedPath);
+                            if (file.exists()) {
+                                currentTitle = lastPlayedTitle;
+                                currentArtist = lastPlayedArtist;
+                                musicPlayer.play(getApplicationContext(), lastPlayedPath);
+                                isPlaying = true;
+                                isPausedByUser = false;
+                                updatePlaybackState();
+                                updateMediaMetadata(currentTitle, currentArtist, 0);
+                                if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());
+                                // 通知 Activity 同步 UI
+                                if (callback != null) callback.onServiceAction(ACTION_PLAY_PAUSE);
+                            }
+                        } catch (Exception e) {
+                            android.util.Log.e("MediaSession", "Error resuming saved song", e);
+                        }
+                    }
+                }
+
+                @Override
+                public void onPause() {
+                    android.util.Log.d("MediaSession", "onPause");
+                    if (musicPlayer.isPlaying()) {
+                        musicPlayer.pause();
+                        isPlaying = false;
+                        isPausedByUser = true;
+                        updatePlaybackState();
+                        if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());
+                        if (callback != null) callback.onServiceAction(ACTION_PLAY_PAUSE);
+                    }
+                }
+
+                @Override
+                public void onSkipToNext() {
+                    if (callback != null) callback.onServiceAction(ACTION_NEXT);
+                }
+
+                @Override
+                public void onSkipToPrevious() {
+                    if (callback != null) callback.onServiceAction(ACTION_PREV);
+                }
+
+                @Override
+                public void onStop() {
+                    musicPlayer.stop();
+                    isPlaying = false;
+                    isPausedByUser = true;
+                    updatePlaybackState();
+                    if (isForeground) {
+                        stopForeground(true);
+                        isForeground = false;
+                    }
+                    if (callback != null) callback.onServiceAction(ACTION_STOP);
+                }
+
+                @Override
+                public void onSeekTo(long pos) {
+                    musicPlayer.seekTo((int) pos);
+                    updatePlaybackState();
+                }
+            });
+            
+            mediaSession.setActive(false);
+            updatePlaybackState();
+        }
+    }
+
+    public void updatePlaybackState() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mediaSession != null) {
+            int state = isPlaying ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
+            long actions = PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | 
+                           PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT | 
+                           PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_STOP |
+                           PlaybackState.ACTION_SEEK_TO;
+            
+            mediaSession.setPlaybackState(new PlaybackState.Builder()
+                    .setState(state, musicPlayer != null ? musicPlayer.getCurrentPosition() : 0, 1.0f)
+                    .setActions(actions)
+                    .build());
+        }
+    }
+
+    public void updateMediaMetadata(String title, String artist, long duration) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mediaSession != null) {
+            mediaSession.setMetadata(new MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
+                    .putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
+                    .build());
         }
     }
 
@@ -289,26 +500,29 @@ public class MusicPlayerService extends Service {
         switch (focusChange) {
             case AudioManager.AUDIOFOCUS_LOSS:
                 // 长期失去焦点，暂停播放
+                wasPlayingBeforeFocusLoss = false;
                 handleAction(ACTION_PAUSED_BY_SERVICE);
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                // 短暂失去焦点，暂停
+                // 短暂失去焦点(电话/语音等)
                 if (musicPlayer.isPlaying()) {
+                    wasPlayingBeforeFocusLoss = true;
                     musicPlayer.pause();
                     isPlaying = false;
+                    updatePlaybackState();
                     if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());
                     if (callback != null) callback.onServiceAction(ACTION_PAUSED_BY_SERVICE);
+                } else {
+                    wasPlayingBeforeFocusLoss = false;
                 }
                 break;
             case AudioManager.AUDIOFOCUS_GAIN:
                 // 重新获得焦点
-                if (!musicPlayer.isPlaying() && musicPlayer.isPrepared()) {
-                    musicPlayer.resume();
-                    isPlaying = true;
-                    if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());
-                    // 通知 Activity 更新 UI（这里可以根据需要扩展 ACTION）
-                }
+                // 关键：根据用户反馈，停止接听后不应该自动播放，即使之前在播放
+                // 如果需要自动恢复，则判断 wasPlayingBeforeFocusLoss
+                // 这里我们选择不自动恢复播放，由用户手动点击或蓝牙按键控制
+                wasPlayingBeforeFocusLoss = false;
                 break;
         }
     };
@@ -344,26 +558,46 @@ public class MusicPlayerService extends Service {
 
     private void handleAction(String action) {
         if (action == null) return;
+        
         // 优先转发给 Activity 处理（Activity 有完整的播放列表和 UI 逻辑）
+        // 但如果 Activity callback 为 null（app重启后首次），Service 自己处理
         if (callback != null) {
             callback.onServiceAction(action);
             return;
         }
+        
         // Activity 不可用时的兜底处理
+        android.util.Log.d("MusicPlayerService", "handleAction (no callback): " + action);
         switch (action) {
             case ACTION_PLAY_PAUSE:
                 if (musicPlayer.isPlaying()) {
                     musicPlayer.pause();
                     isPlaying = false;
+                    isPausedByUser = true;
                 } else if (musicPlayer.isPrepared()) {
                     musicPlayer.resume();
                     isPlaying = true;
+                    isPausedByUser = false;
+                } else if (!lastPlayedPath.isEmpty()) {
+                    // app重启后的场景：使用保存的路径重新播放
+                    try {
+                        File file = new File(lastPlayedPath);
+                        if (file.exists()) {
+                            musicPlayer.play(getApplicationContext(), lastPlayedPath);
+                            isPlaying = true;
+                            isPausedByUser = false;
+                            android.util.Log.d("MusicPlayerService", "handleAction: loaded saved song");
+                        }
+                    } catch (Exception e) {
+                        android.util.Log.e("MusicPlayerService", "Error loading saved song", e);
+                    }
                 }
                 if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());
                 break;
             case ACTION_STOP:
                 musicPlayer.stop();
                 isPlaying = false;
+                isPausedByUser = true;
                 stopForeground(true);
                 isForeground = false;
                 stopSelf();
@@ -400,6 +634,8 @@ public class MusicPlayerService extends Service {
         public void onReceive(Context context, Intent intent) {
             if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(intent.getAction())) {
                 if (musicPlayer.isPlaying()) {
+                    wasPlayingBeforeFocusLoss = true;
+                    isPausedByUser = false; // 系统暂停(蓝牙断开)，不是用户主动暂停
                     musicPlayer.pause();
                     isPlaying = false;
                     if (isForeground) notificationManager.notify(NOTIFICATION_ID, buildNotification());

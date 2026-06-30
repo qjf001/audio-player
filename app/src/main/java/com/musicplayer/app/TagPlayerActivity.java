@@ -15,7 +15,6 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
-import android.widget.ImageView;
 import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -51,13 +50,13 @@ import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class TagPlayerActivity extends AppCompatActivity {
     public static final int RESULT_DISCOVER = 1001;
 
-    // Toolbar & content
     private android.widget.LinearLayout layoutTagChips;
     private RecyclerView recyclerTagSongs;
     private EditText editSearch;
@@ -65,47 +64,40 @@ public class TagPlayerActivity extends AppCompatActivity {
     private ImageButton btnBack, btnSearch;
     private TextView textEmptyHint;
 
-    // Bottom sheet
     private View bottomSheetPlayer, miniPlayer, fullPlayer;
     private BottomSheetBehavior<View> sheetBehavior;
 
-    // Mini player
-    private TextView textSongInfo, textMiniStatus;
+    private TextView textSongInfo;
     private ImageButton btnMiniPrev, btnMiniPlayPause, btnMiniNext;
     private ProgressBar seekMiniProgress;
 
-    // Full player
-    private ImageButton btnCollapse, btnPlayPause, btnPrev, btnNext, btnFullShuffle, btnList;
+    private ImageButton btnPlayPause, btnPrev, btnNext, btnFullShuffle;
     private TextView textFullTitle, textFullArtist, textFullPlayingBarTitle, textCurrentTime, textTotalTime;
     private SeekBar seekProgress, seekVolume;
     private RecyclerView recyclerLyrics;
     private LrcAdapter lrcAdapter;
 
-    // Bottom navigation
     private BottomNavigationView bottomNavigation;
-
-    // Swipe refresh
     private androidx.swiperefreshlayout.widget.SwipeRefreshLayout swipeRefresh;
 
-    // Data & player
     private TagManager tagManager;
     private MusicPlayer musicPlayer;
     private SongAdapter songAdapter;
     private AudioManager audioManager;
-    private Handler progressHandler = new Handler(Looper.getMainLooper());
+    private final Handler progressHandler = new Handler(Looper.getMainLooper());
     
-    // Service connection for saving playback state
     private MusicPlayerService musicService;
     private boolean serviceBound = false;
 
     private List<Tag> userTags = new ArrayList<>();
-    private List<Song> originalTagSongs = new ArrayList<>();
-    private List<Song> playOrder = new ArrayList<>();
-    private List<Song> displaySongs = new ArrayList<>();
+    private final List<Song> originalTagSongs = new ArrayList<>();
+    private final List<Song> playOrder = new ArrayList<>();
+    private final List<Song> displaySongs = new ArrayList<>();
     private Tag selectedTag = null;
     private int currentSongIndex = -1;
     private boolean isShuffle = false;
     private boolean isSearchVisible = false;
+    private boolean isTagPlayerActive = false;
 
     @Override
     protected void attachBaseContext(Context newBase) {
@@ -126,16 +118,13 @@ public class TagPlayerActivity extends AppCompatActivity {
         setContentView(R.layout.activity_tag_player);
 
         tagManager = new TagManager(this);
-        // musicPlayer will be obtained from Service to ensure unified control
-        
-        // 启动并绑定Service，共享播放器
-        Intent serviceIntent = new Intent(this, MusicPlayerService.class);
-        startService(serviceIntent);
-        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
 
         initViews();
         initBottomSheet();
-        loadTags();
+        
+        Intent serviceIntent = new Intent(this, MusicPlayerService.class);
+        startService(serviceIntent);
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
     }
 
     private void initViews() {
@@ -147,7 +136,6 @@ public class TagPlayerActivity extends AppCompatActivity {
         btnSearch = findViewById(R.id.btn_search);
         textEmptyHint = findViewById(R.id.text_empty_hint);
 
-        // Swipe refresh
         swipeRefresh = findViewById(R.id.swipe_refresh);
         swipeRefresh.setColorSchemeColors(ContextCompat.getColor(this, R.color.colorPrimary));
         swipeRefresh.setOnRefreshListener(this::refreshTagData);
@@ -167,7 +155,7 @@ public class TagPlayerActivity extends AppCompatActivity {
 
         btnShuffle.setOnCheckedChangeListener((buttonView, isChecked) -> {
             isShuffle = isChecked;
-            rebuildPlayOrder();
+            rebuildPlayOrder(true);
         });
 
         btnSearch.setOnClickListener(v -> {
@@ -189,16 +177,15 @@ public class TagPlayerActivity extends AppCompatActivity {
             }
         });
 
-        // Bottom navigation
         bottomNavigation = findViewById(R.id.bottom_navigation);
         bottomNavigation.setSelectedItemId(R.id.nav_home);
+
         bottomNavigation.setOnItemSelectedListener(item -> {
             int itemId = item.getItemId();
             if (itemId == R.id.nav_home) {
                 finish();
                 return true;
             } else if (itemId == R.id.nav_discovery) {
-                // 返回首页并切换到发现页
                 setResult(RESULT_DISCOVER);
                 finish();
                 return true;
@@ -213,21 +200,18 @@ public class TagPlayerActivity extends AppCompatActivity {
         miniPlayer = findViewById(R.id.mini_player);
         fullPlayer = findViewById(R.id.full_player);
 
-        // Mini player controls
         btnMiniPlayPause = findViewById(R.id.btn_mini_play_pause);
         btnMiniPrev = findViewById(R.id.btn_mini_prev);
         btnMiniNext = findViewById(R.id.btn_mini_next);
         seekMiniProgress = findViewById(R.id.seek_mini_progress);
         textSongInfo = findViewById(R.id.text_song_info);
-        textMiniStatus = findViewById(R.id.text_mini_status);
 
-        // Full player controls
-        btnCollapse = findViewById(R.id.btn_collapse);
+        ImageButton btnCollapse = findViewById(R.id.btn_collapse);
         btnPlayPause = findViewById(R.id.btn_play_pause);
         btnPrev = findViewById(R.id.btn_prev);
         btnNext = findViewById(R.id.btn_next);
         btnFullShuffle = findViewById(R.id.btn_full_shuffle);
-        btnList = findViewById(R.id.btn_list);
+        ImageButton btnList = findViewById(R.id.btn_list);
         textFullTitle = findViewById(R.id.text_full_title);
         textFullArtist = findViewById(R.id.text_full_artist);
         textFullPlayingBarTitle = findViewById(R.id.text_full_playing_bar_title);
@@ -241,40 +225,35 @@ public class TagPlayerActivity extends AppCompatActivity {
         recyclerLyrics.setLayoutManager(new LinearLayoutManager(this));
         recyclerLyrics.setAdapter(lrcAdapter);
 
-        // Mini player click -> expand
         miniPlayer.setOnClickListener(v -> sheetBehavior.setState(BottomSheetBehavior.STATE_EXPANDED));
         btnCollapse.setOnClickListener(v -> sheetBehavior.setState(BottomSheetBehavior.STATE_COLLAPSED));
 
-        // Mini controls
         btnMiniPlayPause.setOnClickListener(v -> togglePlayPause());
         btnMiniPrev.setOnClickListener(v -> playPrev());
         btnMiniNext.setOnClickListener(v -> playNext());
 
-        // Full controls
         btnPlayPause.setOnClickListener(v -> togglePlayPause());
         btnPrev.setOnClickListener(v -> playPrev());
         btnNext.setOnClickListener(v -> playNext());
         btnFullShuffle.setOnClickListener(v -> {
             isShuffle = !isShuffle;
             btnShuffle.setChecked(isShuffle);
-            rebuildPlayOrder();
+            rebuildPlayOrder(true);
         });
         btnList.setOnClickListener(v -> {
             sheetBehavior.setState(BottomSheetBehavior.STATE_COLLAPSED);
             recyclerTagSongs.smoothScrollToPosition(Math.max(0, currentSongIndex));
         });
 
-        // SeekBar - progress
         seekProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (fromUser) musicPlayer.seekTo(progress);
+                if (fromUser && musicPlayer != null) musicPlayer.seekTo(progress);
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
-        // SeekBar - volume
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         seekVolume.setMax(audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
         seekVolume.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
@@ -287,7 +266,6 @@ public class TagPlayerActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
 
-        // BottomSheet callback
         sheetBehavior.addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
             @Override
             public void onStateChanged(@NonNull View bottomSheet, int newState) {
@@ -305,58 +283,57 @@ public class TagPlayerActivity extends AppCompatActivity {
     }
 
     private void initPlayer() {
-        musicPlayer.setOnPlaybackListener(new MusicPlayer.OnPlaybackListener() {
-            @Override
-            public void onPrepared() {
-                runOnUiThread(() -> {
-                    int d = musicPlayer.getDuration();
-                    seekProgress.setMax(d);
-                    seekMiniProgress.setMax(d);
-                    textTotalTime.setText(formatTime(d));
-                    btnPlayPause.setImageResource(R.drawable.ic_pause_vector);
-                    btnMiniPlayPause.setImageResource(R.drawable.ic_pause_vector);
-                    songAdapter.setSelectedPosition(currentSongIndex);
-                    updatePlayerInfo();
-                    startProgressUpdater();
-                });
-            }
-
-            @Override
-            public void onCompletion() {
-                runOnUiThread(() -> {
-                    btnPlayPause.setImageResource(R.drawable.ic_play_vector);
-                    btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector);
-                    playNext();
-                });
-            }
-
-            @Override
-            public void onError(String error) {
-                runOnUiThread(() -> Toast.makeText(TagPlayerActivity.this, error, Toast.LENGTH_SHORT).show());
-            }
-
-            @Override
-            public void onShouldSkip() {
-                runOnUiThread(() -> playNext());
-            }
-
-            @Override
-            public void onProgress(int currentPosition, int duration) {
-                runOnUiThread(() -> {
-                    seekProgress.setProgress(currentPosition);
-                    seekMiniProgress.setProgress(currentPosition);
-                    textCurrentTime.setText(formatTime(currentPosition));
-                    int l = lrcAdapter.updateCurrentLine(currentPosition);
-                    if (l != -1) recyclerLyrics.smoothScrollToPosition(l);
-                });
-            }
-        });
+        if (musicService != null) {
+            musicService.setTagPlaybackListener(new MusicPlayer.OnPlaybackListener() {
+                @Override
+                public void onPrepared() {
+                    runOnUiThread(() -> {
+                        int d = musicPlayer.getDuration();
+                        seekProgress.setMax(d);
+                        seekMiniProgress.setMax(d);
+                        textTotalTime.setText(formatTime(d));
+                        btnPlayPause.setImageResource(R.drawable.ic_pause_vector);
+                        btnMiniPlayPause.setImageResource(R.drawable.ic_pause_vector);
+                        songAdapter.setSelectedPosition(currentSongIndex);
+                        updatePlayerInfo();
+                        startProgressUpdater();
+                    });
+                }
+    
+                @Override
+                public void onCompletion() {
+                    runOnUiThread(() -> {
+                        btnPlayPause.setImageResource(R.drawable.ic_play_vector);
+                        btnMiniPlayPause.setImageResource(R.drawable.ic_play_vector);
+                        playNext();
+                    });
+                }
+    
+                @Override
+                public void onError(String error) {
+                    runOnUiThread(() -> Toast.makeText(TagPlayerActivity.this, error, Toast.LENGTH_SHORT).show());
+                }
+    
+                @Override
+                public void onShouldSkip() {
+                    runOnUiThread(() -> playNext());
+                }
+    
+                @Override
+                public void onProgress(int currentPosition, int duration) {
+                    runOnUiThread(() -> {
+                        seekProgress.setProgress(currentPosition);
+                        seekMiniProgress.setProgress(currentPosition);
+                        textCurrentTime.setText(formatTime(currentPosition));
+                        int l = lrcAdapter.updateCurrentLine(currentPosition);
+                        if (l != -1) recyclerLyrics.smoothScrollToPosition(l);
+                    });
+                }
+            });
+        }
     }
 
-    // ==================== Refresh ====================
-
     private void refreshTagData() {
-        // 重新加载标签列表（用户可能增删了标签）
         userTags = tagManager.getUserTags();
         if (userTags.isEmpty()) {
             textEmptyHint.setText(R.string.no_tags);
@@ -366,7 +343,6 @@ public class TagPlayerActivity extends AppCompatActivity {
             return;
         }
 
-        // 检查当前选中的标签是否还存在
         Tag matchTag = null;
         if (selectedTag != null) {
             for (Tag t : userTags) {
@@ -378,18 +354,14 @@ public class TagPlayerActivity extends AppCompatActivity {
         }
 
         if (matchTag != null) {
-            // 当前标签仍存在，刷新其歌曲列表
             selectedTag = matchTag;
             updateTagChips();
-            loadSongsForTag(matchTag);
+            loadSongsForTag(matchTag, false);
         } else {
-            // 当前标签已被删除，切换到第一个标签
-            selectTag(userTags.get(0));
+            selectTag(userTags.get(0), false);
         }
         swipeRefresh.setRefreshing(false);
     }
-
-    // ==================== Tag management ====================
 
     private void loadTags() {
         userTags = tagManager.getUserTags();
@@ -400,7 +372,7 @@ public class TagPlayerActivity extends AppCompatActivity {
             return;
         }
         updateTagChips();
-        selectTag(userTags.get(0));
+        selectTag(userTags.get(0), false);
     }
 
     private void updateTagChips() {
@@ -415,7 +387,7 @@ public class TagPlayerActivity extends AppCompatActivity {
                 com.google.android.material.R.style.Widget_MaterialComponents_Button_TextButton), null, 0);
 
         int count = tagManager.getSongCountForTag(tag.getId());
-        btn.setText(tag.getName() + " (" + count + ")");
+        btn.setText(getString(R.string.filter_chip_format, tag.getName(), count));
         btn.setTextSize(11);
         btn.setAllCaps(false);
         btn.setPadding(20, 0, 20, 0);
@@ -427,21 +399,21 @@ public class TagPlayerActivity extends AppCompatActivity {
         boolean isSelected = selectedTag != null && selectedTag.getId() == tag.getId();
         btn.setTextColor(isSelected ? red : gray);
 
-        btn.setOnClickListener(v -> selectTag(tag));
+        btn.setOnClickListener(v -> selectTag(tag, true));
         layoutTagChips.addView(btn);
     }
 
-    private void selectTag(Tag tag) {
+    private void selectTag(Tag tag, boolean shouldPlay) {
         selectedTag = tag;
         updateTagChips();
-        loadSongsForTag(tag);
+        loadSongsForTag(tag, shouldPlay);
     }
 
-    private void loadSongsForTag(Tag tag) {
+    private void loadSongsForTag(Tag tag, boolean shouldPlay) {
         originalTagSongs.clear();
         originalTagSongs.addAll(tagManager.getSongsForTag(tag.getId()));
 
-        rebuildPlayOrder();
+        rebuildPlayOrder(shouldPlay);
 
         if (originalTagSongs.isEmpty()) {
             textEmptyHint.setText(getString(R.string.no_songs_for_tag, tag.getName()));
@@ -470,9 +442,7 @@ public class TagPlayerActivity extends AppCompatActivity {
         }
     }
 
-    // ==================== Play order ====================
-
-    private void rebuildPlayOrder() {
+    private void rebuildPlayOrder(boolean shouldPlay) {
         if (isShuffle) {
             playOrder.clear();
             playOrder.addAll(originalTagSongs);
@@ -486,12 +456,10 @@ public class TagPlayerActivity extends AppCompatActivity {
             displaySongs.addAll(playOrder);
             songAdapter.updateSongs(displaySongs);
         }
-        if (!playOrder.isEmpty()) {
+        if (shouldPlay && !playOrder.isEmpty()) {
             playSong(0);
         }
     }
-
-    // ==================== Search ====================
 
     private void filterDisplaySongs(String query) {
         String lq = query.toLowerCase().trim();
@@ -515,10 +483,9 @@ public class TagPlayerActivity extends AppCompatActivity {
         }
     }
 
-    // ==================== Playback control ====================
-
     private void playSong(int index) {
-        if (playOrder.isEmpty() || index < 0 || index >= playOrder.size()) return;
+        if (musicPlayer == null || playOrder.isEmpty() || index < 0 || index >= playOrder.size()) return;
+        isTagPlayerActive = true;
         Song song = playOrder.get(index);
         if (song == null || song.getPath() == null) return;
         currentSongIndex = index;
@@ -527,12 +494,9 @@ public class TagPlayerActivity extends AppCompatActivity {
         String art = song.getArtist();
         if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
         
-        // 保存播放状态到Service，用于app重启后蓝牙耳机控制
-        savePlaybackStateToService(song.getPath());
-        
-        // 通知 Service 更新前台通知和 MediaSession
         if (musicService != null) {
-            musicService.notifyPlaybackStarted(song.getTitle(), art);
+            musicService.updateLastPlayedPath(song.getPath(), song.getTitle(), art, 0);
+            musicService.notifyPlaybackStarted(musicPlayer, song.getTitle(), art);
         }
         
         bottomSheetPlayer.setVisibility(View.VISIBLE);
@@ -543,40 +507,42 @@ public class TagPlayerActivity extends AppCompatActivity {
     }
 
     private void togglePlayPause() {
-        if (musicPlayer.isPlaying()) {
-            musicPlayer.pause();
+        if (musicService == null) return;
+        MusicPlayer active = musicService.getActivePlayer();
+        if (active.isPlaying()) {
+            active.pause();
             updatePlayPauseUI();
-            if (musicService != null) {
-                musicService.notifyPlaybackPaused();
-                musicService.notifyUserPaused();
-            }
-        } else if (musicPlayer.isPrepared()) {
-            musicPlayer.resume();
-            updatePlayPauseUI();
-            if (musicService != null) {
+            musicService.notifyPlaybackPaused();
+        } else {
+            if (isTagPlayerActive && musicPlayer.isPrepared()) {
+                musicPlayer.resume();
+                updatePlayPauseUI();
                 musicService.notifyPlaybackResumed();
-                musicService.notifyUserResumed();
+            } else if (currentSongIndex >= 0) {
+                isTagPlayerActive = true;
+                playSong(currentSongIndex);
+            } else if (!playOrder.isEmpty()) {
+                isTagPlayerActive = true;
+                playSong(0);
             }
-        } else if (currentSongIndex >= 0) {
-            playSong(currentSongIndex);
         }
     }
 
     private void playPrev() {
-        if (playOrder.isEmpty()) return;
+        if (musicPlayer == null || playOrder.isEmpty()) return;
+        isTagPlayerActive = true;
         int idx = currentSongIndex - 1;
         if (idx < 0) idx = playOrder.size() - 1;
         playSong(idx);
     }
 
     private void playNext() {
-        if (playOrder.isEmpty()) return;
+        if (musicPlayer == null || playOrder.isEmpty()) return;
+        isTagPlayerActive = true;
         int idx = currentSongIndex + 1;
         if (idx >= playOrder.size()) idx = 0;
         playSong(idx);
     }
-
-    // ==================== Player info display ====================
 
     private void updatePlayerInfo() {
         if (currentSongIndex >= 0 && currentSongIndex < playOrder.size()) {
@@ -584,31 +550,22 @@ public class TagPlayerActivity extends AppCompatActivity {
             String art = s.getArtist();
             if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
 
-            // Mini player
-            textSongInfo.setText(s.getTitle() + (art.isEmpty() ? "" : " - " + art));
-            textMiniStatus.setText(R.string.now_playing);
-
-            // Full player
+            textSongInfo.setText(getString(R.string.song_info_format, s.getTitle(), art));
             textFullTitle.setText(s.getTitle());
             textFullArtist.setText(art);
             textFullArtist.setVisibility(art.isEmpty() ? View.INVISIBLE : View.VISIBLE);
-            textFullPlayingBarTitle.setText(s.getTitle() + (art.isEmpty() ? "" : " - " + art));
+            textFullPlayingBarTitle.setText(getString(R.string.song_info_format, s.getTitle(), art));
         } else {
             textSongInfo.setText(R.string.no_song_playing);
-            textMiniStatus.setText("");
         }
     }
 
-    // ==================== Lyrics ====================
-
     private void loadLyrics(String path) {
-        // 1. Try embedded lyrics from metadata
         String embed = extractLyricsFromMetadata(path);
         if (embed != null && !embed.trim().isEmpty()) {
             lrcAdapter.setLrcLines(parseLrcContent(embed));
             return;
         }
-        // 2. Try .lrc file
         int dot = path.lastIndexOf(".");
         if (dot != -1) {
             File lf = new File(path.substring(0, dot) + ".lrc");
@@ -631,7 +588,7 @@ public class TagPlayerActivity extends AppCompatActivity {
                 while (it.hasNext()) {
                     TagField f = it.next();
                     String raw = f.toString();
-                    if (raw.contains("LYRICS") || raw.contains("lyrics") || raw.startsWith("USLT")) {
+                    if (raw.toUpperCase().contains("LYRIC") || raw.toUpperCase().contains("LRC")) {
                         int idx = raw.indexOf("value=");
                         if (idx >= 0) {
                             String val = raw.substring(idx + 6).trim();
@@ -667,14 +624,19 @@ public class TagPlayerActivity extends AppCompatActivity {
     }
 
     private void parseLrcLine(String line, List<LrcLine> lines) {
-        Pattern p = Pattern.compile("\\[(\\d{2}):(\\d{2})\\.(\\d{2,3})]");
+        Pattern p = Pattern.compile("\\[(\\d+):(\\d+)(?:[.:](\\d+))?]");
         Matcher m = p.matcher(line);
-        String text = line.replaceAll("\\[\\d{2}:\\d{2}\\.\\d{2,3}]", "").trim();
+        String text = line.replaceAll("\\[\\d+:?\\d*\\.?\\d*]", "").trim();
         while (m.find()) {
-            int min = Integer.parseInt(m.group(1));
-            int sec = Integer.parseInt(m.group(2));
-            int ms = Integer.parseInt(m.group(3));
-            if (m.group(3).length() == 2) ms *= 10;
+            String g1 = m.group(1), g2 = m.group(2), g3 = m.group(3);
+            if (g1 == null || g2 == null) continue;
+            long min = Long.parseLong(g1);
+            long sec = Long.parseLong(g2);
+            long ms = 0;
+            if (g3 != null) {
+                ms = Long.parseLong(g3);
+                if (g3.length() == 2) ms *= 10;
+            }
             long time = min * 60000L + sec * 1000L + ms;
             lines.add(new LrcLine(time, text));
         }
@@ -682,10 +644,8 @@ public class TagPlayerActivity extends AppCompatActivity {
 
     private String formatTime(int ms) {
         int totalSec = ms / 1000;
-        return String.format("%02d:%02d", totalSec / 60, totalSec % 60);
+        return String.format(Locale.CHINA, "%02d:%02d", totalSec / 60, totalSec % 60);
     }
-
-    // ==================== Progress updater ====================
 
     private final Runnable progressRunnable = new Runnable() {
         @Override
@@ -714,26 +674,17 @@ public class TagPlayerActivity extends AppCompatActivity {
         progressHandler.removeCallbacks(progressRunnable);
     }
     
-    // ==================== Service Connection ====================
-    
     private final ServiceConnection serviceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             MusicPlayerService.MusicBinder binder = (MusicPlayerService.MusicBinder) service;
             musicService = binder.getService();
-            musicPlayer = musicService.getMusicPlayer();
+            musicPlayer = musicService.getTagPlayer();
             serviceBound = true;
-            
-            // 重要：设置 Service 回调，让蓝牙按键可以控制当前 Activity 的逻辑
             musicService.setCallback(serviceCallback);
-            
-            // 初始化播放监听器（使用共享的播放器）
             initPlayer();
-            
-            // 如果已经在播放，同步 UI
-            if (musicPlayer.isPlaying()) {
-                syncPlayerUI();
-            }
+            loadTags();
+            syncPlayerUI();
         }
 
         @Override
@@ -743,11 +694,10 @@ public class TagPlayerActivity extends AppCompatActivity {
         }
     };
     
-    /** 监听来自 Service 的控制动作（蓝牙、通知栏等） */
     private final MusicPlayerService.ServiceCallback serviceCallback = action -> runOnUiThread(() -> {
         switch (action) {
             case MusicPlayerService.ACTION_PLAY_PAUSE:
-                updatePlayPauseUI();
+                togglePlayPause();
                 break;
             case MusicPlayerService.ACTION_NEXT:
                 playNext();
@@ -765,7 +715,33 @@ public class TagPlayerActivity extends AppCompatActivity {
     });
 
     private void syncPlayerUI() {
-        int d = musicPlayer.getDuration();
+        if (musicService == null) return;
+        MusicPlayer active = musicService.getActivePlayer();
+        
+        isTagPlayerActive = (active == musicPlayer);
+        
+        String currentPath = active.getCurrentPath();
+        if (currentPath != null && !currentPath.isEmpty()) {
+            boolean found = false;
+            for (int i = 0; i < playOrder.size(); i++) {
+                if (currentPath.equals(playOrder.get(i).getPath())) {
+                    currentSongIndex = i;
+                    songAdapter.setSelectedPosition(i);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                for (Song s : originalTagSongs) {
+                    if (currentPath.equals(s.getPath())) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        int d = active.getDuration();
         seekProgress.setMax(d);
         seekMiniProgress.setMax(d);
         textTotalTime.setText(formatTime(d));
@@ -777,44 +753,26 @@ public class TagPlayerActivity extends AppCompatActivity {
     }
 
     private void updatePlayPauseUI() {
-        boolean playing = musicPlayer != null && musicPlayer.isPlaying();
+        if (musicService == null) return;
+        boolean playing = musicService.getActivePlayer().isPlaying();
         int icon = playing ? R.drawable.ic_pause_vector : R.drawable.ic_play_vector;
         btnPlayPause.setImageResource(icon);
         btnMiniPlayPause.setImageResource(icon);
         if (playing) startProgressUpdater(); else stopProgressUpdater();
     }
 
-    /** 保存播放状态到Service，用于app重启后蓝牙耳机控制 */
-    private void savePlaybackStateToService(String path) {
-        if (serviceBound && musicService != null && currentSongIndex >= 0 && currentSongIndex < playOrder.size()) {
-            Song s = playOrder.get(currentSongIndex);
-            String art = s.getArtist();
-            if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
-            musicService.updateLastPlayedPath(path, s.getTitle(), art, 0);
-        }
-    }
-
-    // ==================== Lifecycle ====================
-
     @Override
     protected void onPause() {
         super.onPause();
-        // 不再在 onPause 中暂停播放，允许后台播放
-        // 只停止进度更新
         stopProgressUpdater();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // 恢复 Service 回调，确保蓝牙按键能控制当前 Activity
         if (serviceBound && musicService != null) {
             musicService.setCallback(serviceCallback);
-        }
-        if (musicPlayer != null && musicPlayer.isPrepared() && musicPlayer.isPlaying()) {
-            btnPlayPause.setImageResource(R.drawable.ic_pause_vector);
-            btnMiniPlayPause.setImageResource(R.drawable.ic_pause_vector);
-            startProgressUpdater();
+            syncPlayerUI();
         }
     }
 
@@ -822,15 +780,11 @@ public class TagPlayerActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         stopProgressUpdater();
-        
-        // 解绑 Service
         if (serviceBound) {
-            if (musicService != null) musicService.setCallback(null);
+            if (musicService != null) { musicService.setCallback(null); musicService.setTagPlaybackListener(null); }
             try { unbindService(serviceConnection); } catch (Exception ignored) {}
             serviceBound = false;
         }
-        
-        // 统一由 Service 管理播放器生命周期，此处不 release
         musicPlayer = null;
     }
 }

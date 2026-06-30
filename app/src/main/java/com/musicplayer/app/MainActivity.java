@@ -6,13 +6,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
-import android.content.BroadcastReceiver;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.AudioManager;
 import android.media.MediaMetadata;
-import android.media.MediaMetadataRetriever;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.net.Uri;
@@ -29,14 +27,11 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ProgressBar;
 import android.widget.SeekBar;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -83,15 +78,14 @@ public class MainActivity extends AppCompatActivity {
     
     private RecyclerView recyclerSongs;
     private SongAdapter songAdapter;
-    private Spinner spinnerTags;
     private Button btnTagPlayer, btnShuffle, btnGoWeb;
     private ImageButton btnPlayPause, btnPrev, btnNext, btnSettings, btnCollapse, btnFullShuffle, btnList, btnWebHome, btnMiniPrev, btnMiniPlayPause, btnMiniNext, btnSearch;
     private EditText editSearch, editWebUrl;
     private SeekBar seekProgress, seekVolume;
     private ProgressBar seekMiniProgress, webProgress;
-    private TextView textSongInfo, textCurrentDir, textMiniStatus, textFullTitle, textFullArtist, textFullPlayingBarTitle, textCurrentTime, textTotalTime;
+    private TextView textSongInfo, textCurrentDir, textFullTitle, textFullArtist, textFullPlayingBarTitle, textCurrentTime, textTotalTime;
     
-    private View layoutHome, layoutDiscovery, bottomSheetPlayer, miniPlayer, fullPlayer;
+    private View layoutHome, layoutDiscovery, miniPlayer, fullPlayer;
     private androidx.swiperefreshlayout.widget.SwipeRefreshLayout swipeRefresh;
     private android.widget.LinearLayout layoutCategories;
     private android.os.FileObserver directoryObserver;
@@ -101,11 +95,11 @@ public class MainActivity extends AppCompatActivity {
     private com.musicplayer.app.adapter.LrcAdapter lrcAdapter;
     private RecyclerView recyclerLyrics;
     
-    private List<Song> allSongs = new ArrayList<>();
-    private List<Song> currentSongList = new ArrayList<>();
+    private final List<Song> allSongs = new ArrayList<>();
+    private final List<Song> currentSongList = new ArrayList<>();
     private int currentSongIndex = -1;
     private int consecutiveFailures = 0;
-    private MusicPlayer musicPlayer;
+    private MusicPlayer musicPlayer; 
     private MusicPlayerService musicService;
     private boolean serviceBound = false;
     private TagManager tagManager;
@@ -114,13 +108,11 @@ public class MainActivity extends AppCompatActivity {
     private MediaSession mediaSession;
     private boolean isPlaying = false;
     private boolean isSearchVisible = false;
+    private boolean isHomePlayerActive = false;
     
-    // 监听 Service 的通知栏按钮和 Service 主动暂停事件
     private final MusicPlayerService.ServiceCallback serviceCallback = action -> runOnUiThread(() -> {
-        android.util.Log.d("ServiceCallback", "Received action: " + action + ", isPlaying=" + isPlaying + ", isPrepared=" + (musicPlayer != null && musicPlayer.isPrepared()) + ", currentIndex=" + currentSongIndex + ", listSize=" + currentSongList.size());
         switch (action) {
             case MusicPlayerService.ACTION_PLAY_PAUSE:
-                android.util.Log.d("ServiceCallback", "Calling togglePlayPause");
                 togglePlayPause();
                 break;
             case MusicPlayerService.ACTION_NEXT:
@@ -137,7 +129,6 @@ public class MainActivity extends AppCompatActivity {
                 updateMediaSessionState();
                 break;
             case MusicPlayerService.ACTION_PAUSED_BY_SERVICE:
-                // 耳机断开等情况，Service 已暂停播放，此处只更新 UI
                 isPlaying = false;
                 updatePlayPauseUI();
                 updateMediaSessionState();
@@ -150,22 +141,16 @@ public class MainActivity extends AppCompatActivity {
         public void onServiceConnected(ComponentName name, IBinder service) {
             MusicPlayerService.MusicBinder binder = (MusicPlayerService.MusicBinder) service;
             musicService = binder.getService();
-            musicPlayer = musicService.getMusicPlayer();
+            musicPlayer = musicService.getHomePlayer();
             mediaSession = musicService.getMediaSession();
             serviceBound = true;
 
             musicService.setCallback(serviceCallback);
 
-            // 初始化播放器和加载歌曲（依赖 musicPlayer / mediaSession）
             initPlayer();
             initMediaSession();
             loadSongs();
-
-            // 如果 Service 正在播放，同步 UI
-            if (musicPlayer.isPlaying()) {
-                isPlaying = true;
-                updatePlayPauseUI();
-            }
+            syncPlayerUI();
         }
 
         @Override
@@ -175,8 +160,7 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    private boolean isTagFiltered = false;
-    private String selectedFilterType = "none"; // "none", "category", "tag"
+    private String selectedFilterType = "none";
     private String selectedCategory = "";
     private Song lastPlayedSong = null;
     private boolean shouldResumeFromSavedPosition = false;
@@ -200,18 +184,12 @@ public class MainActivity extends AppCompatActivity {
         
         tagManager = new TagManager(this);
         directoryManager = new MusicDirectoryManager(this);
-        // musicPlayer 将在 Service 绑定后获取
 
-        // 首次启动：自动将扫描目录设为系统 Music 目录
         handleFirstLaunch();
-
         initViews();
-
-        // 注册耳机断开广播监听（已迁移到 Service，Activity 不再注册）
         checkPermissions();
         setupDirectoryObserver();
 
-        // 启动并绑定音乐播放服务
         Intent serviceIntent = new Intent(this, MusicPlayerService.class);
         startService(serviceIntent);
         bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
@@ -221,16 +199,15 @@ public class MainActivity extends AppCompatActivity {
     
     private void checkBatteryOptimizations() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            String packageName = getPackageName();
             android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            if (!pm.isIgnoringBatteryOptimizations(getPackageName())) {
                 new AlertDialog.Builder(this)
                         .setTitle(R.string.battery_optimization_title)
                         .setMessage(R.string.battery_optimization_message)
                         .setPositiveButton(R.string.go_set, (dialog, which) -> {
                             try {
                                 Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                                intent.setData(Uri.parse("package:" + packageName));
+                                intent.setData(Uri.parse("package:" + getPackageName()));
                                 startActivity(intent);
                             } catch (Exception e) {
                                 Intent intent = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
@@ -245,7 +222,6 @@ public class MainActivity extends AppCompatActivity {
     
     private void initViews() {
         recyclerSongs = findViewById(R.id.recycler_songs);
-        spinnerTags = findViewById(R.id.spinner_tags);
         btnTagPlayer = findViewById(R.id.btn_tag_player);
         btnShuffle = findViewById(R.id.btn_shuffle);
         editSearch = findViewById(R.id.edit_search);
@@ -298,7 +274,7 @@ public class MainActivity extends AppCompatActivity {
         songAdapter = new SongAdapter(currentSongList);
         recyclerSongs.setAdapter(songAdapter);
         
-        songAdapter.setOnSongClickListener((song, position) -> playSongManually(song, position));
+        songAdapter.setOnSongClickListener(this::playSongManually);
         songAdapter.setOnSongLongClickListener((song, position) -> showSongOptionsDialog(song));
         
         btnTagPlayer.setOnClickListener(v -> openTagPlayer());
@@ -308,7 +284,6 @@ public class MainActivity extends AppCompatActivity {
         btnNext.setOnClickListener(v -> { consecutiveFailures = 0; playNext(); });
         btnSettings.setOnClickListener(v -> showSettingsDialog());
         
-        // 搜索按钮切换
         btnSearch.setOnClickListener(v -> {
             isSearchVisible = !isSearchVisible;
             editSearch.setVisibility(isSearchVisible ? View.VISIBLE : View.GONE);
@@ -321,38 +296,29 @@ public class MainActivity extends AppCompatActivity {
         });
         
         editSearch.addTextChangedListener(new android.text.TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override
-            public void onTextChanged(CharSequence s, int start, int before, int count) { filterSongs(s.toString()); }
-            @Override
-            public void afterTextChanged(android.text.Editable s) {}
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { filterSongs(s.toString()); }
+            @Override public void afterTextChanged(android.text.Editable s) {}
         });
         
         seekProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { if (fromUser && musicPlayer != null) musicPlayer.seekTo(progress); }
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {}
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { if (fromUser && musicPlayer != null) musicPlayer.seekTo(progress); }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
         
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         seekVolume.setMax(audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
         seekVolume.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
         seekVolume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0); }
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {}
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0); }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
     }
     
     private void initBottomSheet() {
-        bottomSheetPlayer = findViewById(R.id.bottom_sheet_player);
+        View bottomSheetPlayer = findViewById(R.id.bottom_sheet_player);
         sheetBehavior = BottomSheetBehavior.from(bottomSheetPlayer);
         miniPlayer = findViewById(R.id.mini_player);
         fullPlayer = findViewById(R.id.full_player);
@@ -360,7 +326,6 @@ public class MainActivity extends AppCompatActivity {
         btnMiniPrev = findViewById(R.id.btn_mini_prev);
         btnMiniNext = findViewById(R.id.btn_mini_next);
         seekMiniProgress = findViewById(R.id.seek_mini_progress);
-        textMiniStatus = findViewById(R.id.text_mini_status);
         btnCollapse = findViewById(R.id.btn_collapse);
         textFullTitle = findViewById(R.id.text_full_title);
         textFullArtist = findViewById(R.id.text_full_artist);
@@ -377,7 +342,7 @@ public class MainActivity extends AppCompatActivity {
         miniPlayer.setOnClickListener(v -> sheetBehavior.setState(BottomSheetBehavior.STATE_EXPANDED));
         btnCollapse.setOnClickListener(v -> sheetBehavior.setState(BottomSheetBehavior.STATE_COLLAPSED));
         btnMiniPlayPause.setOnClickListener(v -> togglePlayPause());
-        btnMiniPrev.setOnClickListener(v -> { playPrevious(); });
+        btnMiniPrev.setOnClickListener(v -> playPrevious());
         btnMiniNext.setOnClickListener(v -> { consecutiveFailures = 0; playNext(); });
         btnFullShuffle.setOnClickListener(v -> shuffleSongs());
         btnList.setOnClickListener(v -> {
@@ -415,13 +380,8 @@ public class MainActivity extends AppCompatActivity {
         s.setUserAgentString("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
         
         webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { v.loadUrl(r.getUrl().toString()); return true; }
-            @Override
-            @SuppressWarnings("deprecation")
-            public boolean shouldOverrideUrlLoading(WebView v, String u) { v.loadUrl(u); return true; }
-            @Override
-            public void onPageFinished(WebView v, String u) {
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { v.loadUrl(r.getUrl().toString()); return true; }
+            @Override public void onPageFinished(WebView v, String u) {
                 super.onPageFinished(v, u);
                 v.loadUrl("javascript:(function() { " +
                         "var m = document.querySelector('meta[name=\"viewport\"]');" +
@@ -431,8 +391,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onProgressChanged(WebView v, int p) {
+            @Override public void onProgressChanged(WebView v, int p) {
                 webProgress.setVisibility(p == 100 ? View.GONE : View.VISIBLE);
                 webProgress.setProgress(p);
             }
@@ -452,12 +411,7 @@ public class MainActivity extends AppCompatActivity {
         btnGoWeb.setOnClickListener(v -> {
             String input = editWebUrl.getText().toString().trim();
             if (!input.isEmpty()) {
-                String finalUrl;
-                if (input.startsWith("http")) {
-                    finalUrl = input;
-                } else {
-                    finalUrl = "https://" + input;
-                }
+                String finalUrl = input.startsWith("http") ? input : "https://" + input;
                 webView.loadUrl(finalUrl);
                 ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(editWebUrl.getWindowToken(), 0);
             }
@@ -467,74 +421,69 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initPlayer() {
-        musicPlayer.setOnPlaybackListener(new MusicPlayer.OnPlaybackListener() {
-            @Override
-            public void onPrepared() {
-                runOnUiThread(() -> {
-                    int d = musicPlayer.getDuration();
-                    seekProgress.setMax(d);
-                    seekMiniProgress.setMax(d);
-                    textTotalTime.setText(formatTime(d));
-                    consecutiveFailures = 0;
-                    updateMediaSessionState();
-                    // 处理断点续播：在 MediaPlayer 准备就绪后才执行 seekTo
-                    if (pendingSeekPosition > 0) {
-                        musicPlayer.seekTo(pendingSeekPosition);
-                        pendingSeekPosition = 0;
-                    }
-                });
-            }
-            @Override
-            public void onCompletion() {
-                runOnUiThread(() -> {
-                    isPlaying = false;
-                    
-                    // 歌曲播完，重置进度为0（所有分类）
-                    if (lastPlayedSong != null) {
-                        String cat = lastPlayedSong.getCategory();
-                        if (cat != null && !cat.equals("音乐")) {
-                            tagManager.updateLastPosition(lastPlayedSong.getId(), 0);
+        if (musicService != null) {
+            musicService.setHomePlaybackListener(new MusicPlayer.OnPlaybackListener() {
+                @Override
+                public void onPrepared() {
+                    runOnUiThread(() -> {
+                        int d = musicPlayer.getDuration();
+                        seekProgress.setMax(d);
+                        seekMiniProgress.setMax(d);
+                        textTotalTime.setText(formatTime(d));
+                        consecutiveFailures = 0;
+                        updateMediaSessionState();
+                        if (pendingSeekPosition > 0) {
+                            musicPlayer.seekTo(pendingSeekPosition);
+                            pendingSeekPosition = 0;
                         }
-                        lastPlayedSong.setLastPosition(0);
-                        lastPlayedSong = null;
-                    }
-            
-                    updateMediaSessionState();
-                    updatePlayPauseUI();
-                    if (musicService != null) musicService.notifyPlaybackPaused();
-                    consecutiveFailures = 0;
-                    playNext();
-                });
-            }
-            @Override
-            public void onError(String e) { runOnUiThread(() -> Toast.makeText(MainActivity.this, e, Toast.LENGTH_SHORT).show()); }
-            @Override
-            public void onShouldSkip() {
-                runOnUiThread(() -> {
-                    consecutiveFailures++;
-                    if (consecutiveFailures >= currentSongList.size()) {
-                        Toast.makeText(MainActivity.this, R.string.all_songs_failed, Toast.LENGTH_SHORT).show();
+                    });
+                }
+                @Override
+                public void onCompletion() {
+                    runOnUiThread(() -> {
                         isPlaying = false;
+                        if (lastPlayedSong != null) {
+                            String cat = lastPlayedSong.getCategory();
+                            if (cat != null && !cat.equals("音乐")) tagManager.updateLastPosition(lastPlayedSong.getId(), 0);
+                            lastPlayedSong.setLastPosition(0);
+                            lastPlayedSong = null;
+                        }
+                
+                        updateMediaSessionState();
                         updatePlayPauseUI();
-                    } else {
+                        if (musicService != null) musicService.notifyPlaybackPaused();
+                        consecutiveFailures = 0;
                         playNext();
-                    }
-                });
-            }
-            @Override
-            public void onProgress(int c, int d) {
-                runOnUiThread(() -> {
-                    seekProgress.setProgress(c);
-                    seekMiniProgress.setProgress(c);
-                    textCurrentTime.setText(formatTime(c));
-                    int l = lrcAdapter.updateCurrentLine(c);
-                    if (l != -1) recyclerLyrics.smoothScrollToPosition(l);
-                });
-            }
-        });
+                    });
+                }
+                @Override public void onError(String e) { runOnUiThread(() -> Toast.makeText(MainActivity.this, e, Toast.LENGTH_SHORT).show()); }
+                @Override
+                public void onShouldSkip() {
+                    runOnUiThread(() -> {
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= currentSongList.size()) {
+                            Toast.makeText(MainActivity.this, R.string.all_songs_failed, Toast.LENGTH_SHORT).show();
+                            isPlaying = false;
+                            updatePlayPauseUI();
+                        } else {
+                            playNext();
+                        }
+                    });
+                }
+                @Override
+                public void onProgress(int c, int d) {
+                    runOnUiThread(() -> {
+                        seekProgress.setProgress(c);
+                        seekMiniProgress.setProgress(c);
+                        textCurrentTime.setText(formatTime(c));
+                        int l = lrcAdapter.updateCurrentLine(c);
+                        if (l != -1) recyclerLyrics.smoothScrollToPosition(l);
+                    });
+                }
+            });
+        }
     }
 
-    /** 更新播放/暂停按钮图标（抽取公共方法） */
     private void updatePlayPauseUI() {
         btnPlayPause.setImageResource(isPlaying ? R.drawable.ic_pause_vector : R.drawable.ic_play_vector);
         btnMiniPlayPause.setImageResource(isPlaying ? R.drawable.ic_pause_vector : R.drawable.ic_play_vector);
@@ -545,22 +494,12 @@ public class MainActivity extends AppCompatActivity {
         textCurrentDir.setText(d != null && !d.isEmpty() ? getString(R.string.current_directory) + d : getString(R.string.no_directory));
     }
 
-    /**
-     * 首次启动优化：如果用户未设置过目录，自动将扫描目录设为系统 Music 目录，
-     * 避免扫描全盘。用户之后可以在设置中修改。
-     */
     private void handleFirstLaunch() {
         android.content.SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
-        boolean isFirstLaunch = !prefs.getBoolean("first_launch_done", false);
-        if (isFirstLaunch && !directoryManager.hasCustomDirectory()) {
-            // 默认使用系统 Music 目录
-            File musicDir = android.os.Environment.getExternalStoragePublicDirectory(
-                    android.os.Environment.DIRECTORY_MUSIC);
-            if (musicDir != null && musicDir.exists()) {
-                directoryManager.setMusicDirectory(musicDir.getAbsolutePath());
-            }
+        if (!prefs.getBoolean("first_launch_done", false) && !directoryManager.hasCustomDirectory()) {
+            File musicDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MUSIC);
+            if (musicDir != null && musicDir.exists()) directoryManager.setMusicDirectory(musicDir.getAbsolutePath());
         }
-        // 标记首次启动已完成
         prefs.edit().putBoolean("first_launch_done", true).apply();
     }
 
@@ -577,11 +516,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSION_REQUEST_CODE && grantResults.length > 0
-                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            // 权限授予后，自动触发扫描
-            refreshSongList();
-        }
+        if (requestCode == PERMISSION_REQUEST_CODE && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) refreshSongList();
     }
 
     private void loadSongs() {
@@ -594,25 +529,22 @@ public class MainActivity extends AppCompatActivity {
 
     private void savePlaybackState() {
         if (lastPlayedSong != null) {
-            int pos = (musicPlayer != null && musicPlayer.isPrepared()) ? musicPlayer.getCurrentPosition() : 0;
-            // 使用 commit() 同步写入，确保进程被杀时数据不丢失
+            int currentPos = (musicPlayer != null && musicPlayer.isPrepared()) ? musicPlayer.getCurrentPosition() : 0;
             getSharedPreferences("player_prefs", MODE_PRIVATE).edit()
                 .putLong("last_song_id", lastPlayedSong.getId())
-                .putInt("last_position", pos)
-                .commit();
+                .putInt("last_position", currentPos)
+                .apply();
             
-            // 同步保存到 Service，确保蓝牙控制能接续
             if (musicService != null) {
-                String art = lastPlayedSong.getArtist();
-                if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
-                musicService.updateLastPlayedPath(lastPlayedSong.getPath(), lastPlayedSong.getTitle(), art, pos);
+                String artStr = lastPlayedSong.getArtist();
+                if (artStr == null || artStr.isEmpty() || artStr.contains("<unknown>")) artStr = "";
+                musicService.updateLastPlayedPath(lastPlayedSong.getPath(), lastPlayedSong.getTitle(), artStr, currentPos);
             }
 
-            // 非音乐类同时保存到数据库（用于列表进度条显示）
-            String cat = lastPlayedSong.getCategory();
-            if (cat != null && !cat.equals("音乐")) {
-                tagManager.updateLastPosition(lastPlayedSong.getId(), pos);
-                lastPlayedSong.setLastPosition(pos);
+            String catVal = lastPlayedSong.getCategory();
+            if (catVal != null && !catVal.equals("音乐")) {
+                tagManager.updateLastPosition(lastPlayedSong.getId(), currentPos);
+                lastPlayedSong.setLastPosition(currentPos);
             }
         }
     }
@@ -623,21 +555,17 @@ public class MainActivity extends AppCompatActivity {
         int lastPos = prefs.getInt("last_position", 0);
 
         if (lastId != -1) {
-            Song restoredSong = null;
-            // 在 allSongs 中查找歌曲
             for (Song s : allSongs) {
                 if (s.getId() == lastId) {
-                    restoredSong = s;
+                    lastPlayedSong = s;
                     break;
                 }
             }
             
-            if (restoredSong != null) {
-                lastPlayedSong = restoredSong;
-                restoredSong.setLastPosition(lastPos);
+            if (lastPlayedSong != null) {
+                lastPlayedSong.setLastPosition(lastPos);
                 shouldResumeFromSavedPosition = true;
                 
-                // 在 currentSongList 中查找正确索引（不是 allSongs 的索引）
                 currentSongIndex = -1;
                 for (int i = 0; i < currentSongList.size(); i++) {
                     if (currentSongList.get(i).getId() == lastId) {
@@ -645,23 +573,23 @@ public class MainActivity extends AppCompatActivity {
                         break;
                     }
                 }
-                // 若不在当前过滤列表中，回退到 allSongs 索引
+                
                 if (currentSongIndex == -1) {
-                    for (int i = 0; i < allSongs.size(); i++) {
-                        if (allSongs.get(i).getId() == lastId) {
-                            currentSongIndex = i;
+                    for (int j = 0; j < allSongs.size(); j++) {
+                        if (allSongs.get(j).getId() == lastId) {
+                            currentSongIndex = j;
                             break;
                         }
                     }
                 }
                 
-                String art = restoredSong.getArtist();
-                if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
-                textSongInfo.setText(restoredSong.getTitle() + (art.isEmpty() ? "" : " - " + art));
-                textFullTitle.setText(restoredSong.getTitle());
-                textFullArtist.setText(art);
-                textFullArtist.setVisibility(art.isEmpty() ? View.INVISIBLE : View.VISIBLE);
-                textFullPlayingBarTitle.setText(restoredSong.getTitle() + (art.isEmpty() ? "" : " - " + art));
+                String artistName = lastPlayedSong.getArtist();
+                if (artistName == null || artistName.isEmpty() || artistName.contains("<unknown>")) artistName = "";
+                textSongInfo.setText(getString(R.string.song_info_format, lastPlayedSong.getTitle(), artistName));
+                textFullTitle.setText(lastPlayedSong.getTitle());
+                textFullArtist.setText(artistName);
+                textFullArtist.setVisibility(artistName.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+                textFullPlayingBarTitle.setText(getString(R.string.song_info_format, lastPlayedSong.getTitle(), artistName));
                 
                 seekProgress.setProgress(lastPos);
                 seekMiniProgress.setProgress(lastPos);
@@ -672,460 +600,209 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void loadSongsFromDevice() {
-        String d = directoryManager.getMusicDirectory();
-        if (d != null && !d.isEmpty()) loadSongsFromDirectory(d); else loadSongsFromMediaStore();
-    }
-
-    private void loadSongsFromMediaStore() {
-        Uri uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-        String[] proj = { MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DURATION };
-        Cursor c = getContentResolver().query(uri, proj, MediaStore.Audio.Media.IS_MUSIC + " != 0", null, null);
-        if (c != null) {
-            while (c.moveToNext()) {
-                String path = c.getString(0);
-                Song s = new Song();
-                s.setPath(path);
-                s.setTitle(Song.formatTitleFromPath(path));
-                String art = c.getString(1);
-                String alb = c.getString(2);
-                if (art == null || art.contains("<unknown>")) updateMetadataFromFile(s);
-                else { s.setArtist(art); s.setAlbum(alb); }
-                s.setDuration(c.getLong(3));
-                s.setId(tagManager.addSong(s));
-                allSongs.add(s);
-            }
-            c.close();
-        }
-    }
-
-    private void loadSongsFromDirectory(String path) {
-        File dir = new File(path);
-        if (!dir.exists() || !dir.isDirectory()) return;
-        List<String> existingPaths = new ArrayList<>();
-        for (Song s : allSongs) existingPaths.add(s.getPath());
-        // 只扫描根目录下的音频文件（不递归），子目录属于分类
-        File[] files = dir.listFiles();
-        if (files != null) {
-            for (File entry : files) {
-                if (!entry.isFile()) continue;
-                String n = entry.getName().toLowerCase();
-                if (!n.endsWith(".mp3") && !n.endsWith(".flac") && !n.endsWith(".wav") && !n.endsWith(".aac") && !n.endsWith(".m4a") && !n.endsWith(".ogg")) continue;
-                Song s = new Song();
-                s.setPath(entry.getAbsolutePath());
-                s.setTitle(Song.formatTitleFromPath(entry.getAbsolutePath()));
-                updateMetadataFromFile(s);
-                s.setCategory("音乐");
-                s.setId(tagManager.addSong(s));
-                allSongs.add(s);
-            }
-        }
-        // 扫描子目录中的音频文件，以子目录名称为分类
-        File[] subdirs = dir.listFiles(File::isDirectory);
-        if (subdirs != null) {
-            for (File subdir : subdirs) {
-                if (subdir.getName().startsWith(".")) continue;
-                loadCategorySongs(subdir, subdir.getName());
-            }
-        }
-    }
-
-    private void loadCategorySongs(File categoryDir, String categoryName) {
-        File[] entries = categoryDir.listFiles();
-        if (entries == null) return;
-        for (File entry : entries) {
-            if (entry.isDirectory()) {
-                if (entry.getName().startsWith(".")) continue;
-                loadCategorySongs(entry, categoryName);
-            } else if (entry.isFile()) {
-                String n = entry.getName().toLowerCase();
-                if (!n.endsWith(".mp3") && !n.endsWith(".flac") && !n.endsWith(".wav") && !n.endsWith(".aac") && !n.endsWith(".m4a") && !n.endsWith(".ogg")) continue;
-                Song s = new Song();
-                s.setPath(entry.getAbsolutePath());
-                s.setTitle(Song.formatTitleFromPath(entry.getAbsolutePath()));
-                updateMetadataFromFile(s);
-                s.setCategory(categoryName);
-                s.setId(tagManager.addSong(s));
-                tagManager.addCategoryTag(categoryName);
-                allSongs.add(s);
-            }
-        }
-    }
-
     private void filterSongs(String q) {
         String lq = q.toLowerCase().trim();
         List<Song> base = new ArrayList<>();
-        
         try {
             if ("category".equals(selectedFilterType)) {
-                // 按目录分类过滤：使用歌曲的 category 字段
-                for (Song s : allSongs) {
-                    if (selectedCategory.equals(s.getCategory())) {
-                        base.add(s);
-                    }
-                }
+                for (Song s : allSongs) if (selectedCategory.equals(s.getCategory())) base.add(s);
             } else if ("tag".equals(selectedFilterType)) {
-                // 按用户标签过滤：通过 song_tags 关联表
-                long tagId = tagManager.addTag(selectedCategory);
-                List<Long> tagSongIds = tagManager.getSongIdsForTag(tagId);
-                for (Song s : allSongs) {
-                    if (tagSongIds.contains(s.getId())) {
-                        base.add(s);
-                    }
-                }
-            } else {
-                base.addAll(allSongs);
-            }
-        } catch (Exception e) {
-            base.clear();
-            base.addAll(allSongs);
-        }
-
+                long tid = tagManager.addTag(selectedCategory);
+                List<Long> ids = tagManager.getSongIdsForTag(tid);
+                for (Song s : allSongs) if (ids.contains(s.getId())) base.add(s);
+            } else base.addAll(allSongs);
+        } catch (Exception e) { base.addAll(allSongs); }
         currentSongList.clear();
         for (Song s : base) {
-            if (lq.isEmpty() || (s.getTitle() != null && s.getTitle().toLowerCase().contains(lq)) || 
-                (s.getArtist() != null && s.getArtist().toLowerCase().contains(lq))) {
-                currentSongList.add(s);
-            }
+            if (lq.isEmpty() || (s.getTitle() != null && s.getTitle().toLowerCase().contains(lq)) || (s.getArtist() != null && s.getArtist().toLowerCase().contains(lq))) currentSongList.add(s);
         }
         songAdapter.updateSongs(currentSongList);
     }
 
-    private void updateSongList() { 
-        filterSongs(editSearch.getText().toString()); 
-    }
+    private void updateSongList() { filterSongs(editSearch.getText().toString()); }
 
     private void updateCategoryBar() {
         if (layoutCategories == null) return;
         try {
             layoutCategories.removeAllViews();
-                
-            // 1. 添加 "全部音乐"
             addFilterChip(layoutCategories, getString(R.string.all_music), true, "none");
-                
-            // 2. 仅在设置了自定义加载目录时，扫描一级子目录作为分类
-            String dirPath = directoryManager.getMusicDirectory();
-            if (dirPath != null && !dirPath.isEmpty()) {
-                File dir = new File(dirPath);
-                File[] subdirs = dir.listFiles(File::isDirectory);
-                if (subdirs != null) {
-                    java.util.Arrays.sort(subdirs, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
-                    for (File subdir : subdirs) {
-                        // 跳过以点开头的隐藏目录（系统目录）
-                        if (subdir.getName().startsWith(".")) continue;
-                        addFilterChip(layoutCategories, subdir.getName(), false, "category");
+            String d = directoryManager.getMusicDirectory();
+            if (d != null && !d.isEmpty()) {
+                File[] sub = new File(d).listFiles(File::isDirectory);
+                if (sub != null) {
+                    java.util.Arrays.sort(sub, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+                    for (File s : sub) {
+                        if (s.getName().startsWith(".")) continue;
+                        addFilterChip(layoutCategories, s.getName(), false, "category");
                     }
                 }
             }
-            // MediaStore 模式不创建子分类，只显示"全部音乐"
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        } catch (Exception e) {}
     }
     
     private void updateTagSpinner() {
         updateCategoryBar();
-        updateTagPlayerButtonState();
-    }
-
-    /** 根据是否存在用户标签，启用/禁用标签播放按钮 */
-    private void updateTagPlayerButtonState() {
-        if (btnTagPlayer == null) return;
-        boolean hasTags = tagManager.getUserTags().size() > 0;
-        btnTagPlayer.setEnabled(hasTags);
-        btnTagPlayer.setAlpha(hasTags ? 1.0f : 0.4f);
+        if (btnTagPlayer != null) {
+            boolean hasTags = !tagManager.getUserTags().isEmpty();
+            btnTagPlayer.setEnabled(hasTags);
+            btnTagPlayer.setAlpha(hasTags ? 1.0f : 0.4f);
+        }
     }
     
     private void addFilterChip(android.widget.LinearLayout container, String name, boolean isAll, String filterType) {
         Button btn = new Button(new android.view.ContextThemeWrapper(this, com.google.android.material.R.style.Widget_MaterialComponents_Button_TextButton), null, 0);
-            
-        // 统计数量
-        int count = 0;
-        if (isAll) {
-            count = tagManager.getTotalSongCount();
-        } else if ("category".equals(filterType)) {
-            count = tagManager.getSongCountByCategory(name);
-        } else if ("tag".equals(filterType)) {
-            count = tagManager.getSongCountForTag(tagManager.addTag(name));
-        }
-            
-        btn.setText(name + " (" + count + ")");
+        int count = isAll ? tagManager.getTotalSongCount() : ("category".equals(filterType) ? tagManager.getSongCountByCategory(name) : tagManager.getSongCountForTag(tagManager.addTag(name)));
+        btn.setText(getString(R.string.filter_chip_format, name, count));
         btn.setTextSize(11);
         btn.setAllCaps(false);
         btn.setPadding(20, 0, 20, 0);
         btn.setMinWidth(0);
         btn.setMinimumWidth(0);
-            
-        int gray = ContextCompat.getColor(this, android.R.color.darker_gray);
-        int red = ContextCompat.getColor(this, R.color.colorPrimary);
+        int gray = ContextCompat.getColor(this, android.R.color.darker_gray), red = ContextCompat.getColor(this, R.color.colorPrimary);
         boolean isSelected = isAll ? "none".equals(selectedFilterType) : (selectedCategory.equals(name) && selectedFilterType.equals(filterType));
         btn.setTextColor(isSelected ? red : gray);
-            
         btn.setOnClickListener(v -> {
             selectedCategory = name;
             selectedFilterType = filterType;
-            isTagFiltered = !isAll;
             updateTagSpinner();
             filterSongs(editSearch.getText().toString());
         });
-            
         container.addView(btn);
     }
 
     private void showSettingsDialog() {
-        int dp16 = (int) (16 * getResources().getDisplayMetrics().density);
-        int dp1  = (int) (1  * getResources().getDisplayMetrics().density);
-        int textColor = isDarkMode() ? 0xFFFFFFFF : 0xFF000000;
-
-        android.widget.LinearLayout listLayout = new android.widget.LinearLayout(this);
-        listLayout.setOrientation(android.widget.LinearLayout.VERTICAL);
-        listLayout.setPadding(0, dp16, 0, 0);
-
-        // 辅助：添加水平分割线
-        java.util.function.Supplier<View> makeDivider = () -> {
-            View d = new View(this);
-            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
-                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT, dp1);
+        int dp16 = (int)(16 * getResources().getDisplayMetrics().density), dp1 = (int)(1 * getResources().getDisplayMetrics().density), textColor = isDarkMode() ? 0xFFFFFFFF : 0xFF000000;
+        android.widget.LinearLayout l = new android.widget.LinearLayout(this);
+        l.setOrientation(android.widget.LinearLayout.VERTICAL);
+        l.setPadding(0, dp16, 0, 0);
+        java.util.function.Supplier<View> div = () -> {
+            View v = new View(this);
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(-1, dp1);
             lp.setMargins(dp16 * 2, 0, dp16 * 2, 0);
-            d.setLayoutParams(lp);
-            d.setBackgroundColor(0x30000000);
-            return d;
+            v.setLayoutParams(lp); v.setBackgroundColor(0x30000000); return v;
         };
-
-        // 辅助：创建可点击的文字项
-        java.util.function.BiFunction<String, Runnable, TextView> makeItem = (text, action) -> {
-            TextView tv = new TextView(this);
-            tv.setText(text);
-            tv.setTextSize(16);
-            tv.setTextColor(textColor);
-            tv.setPadding(dp16, dp16, dp16, dp16);
-            if (action != null) {
-                tv.setOnClickListener(v -> action.run());
-            }
-            return tv;
+        java.util.function.BiFunction<String, Runnable, TextView> item = (t, a) -> {
+            TextView tv = new TextView(this); tv.setText(t); tv.setTextSize(16); tv.setTextColor(textColor);
+            tv.setPadding(dp16, dp16, dp16, dp16); if (a != null) tv.setOnClickListener(v -> a.run()); return tv;
         };
-
-        // 当前目录（若已设置）
         String cur = directoryManager.getMusicDirectory();
         if (cur != null && !cur.isEmpty()) {
-            TextView dirItem = new TextView(this);
-            dirItem.setText(getString(R.string.current_directory) + cur);
-            dirItem.setTextSize(14);
-            dirItem.setTextColor(0xFF888888);
-            dirItem.setPadding(dp16 * 2, dp16, dp16 * 2, dp16);
-            listLayout.addView(dirItem);
-            listLayout.addView(makeDivider.get());
+            TextView tv = new TextView(this); tv.setText(getString(R.string.current_directory_prefix, cur));
+            tv.setTextSize(14); tv.setTextColor(0xFF888888); tv.setPadding(dp16 * 2, dp16, dp16 * 2, dp16);
+            l.addView(tv); l.addView(div.get());
         }
-
-        // 同一行：选择音乐目录 | 扫描/加载
-        android.widget.LinearLayout rowFolderScan = new android.widget.LinearLayout(this);
-        rowFolderScan.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-        TextView itemFolder = makeItem.apply(getString(R.string.select_folder), () -> selectMusicFolder());
-        TextView itemScan  = makeItem.apply(getString(R.string.refresh),       () -> refreshSongList());
-        android.widget.LinearLayout.LayoutParams lpHalf = new android.widget.LinearLayout.LayoutParams(
-                0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        itemFolder.setLayoutParams(lpHalf);
-        itemScan.setLayoutParams(lpHalf);
-        itemFolder.setGravity(android.view.Gravity.CENTER);
-        itemScan.setGravity(android.view.Gravity.CENTER);
-        rowFolderScan.addView(itemFolder);
-        // 中间垂直分割线
-        View vDiv = new View(this);
-        vDiv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp1, android.widget.LinearLayout.LayoutParams.MATCH_PARENT));
-        vDiv.setBackgroundColor(0x30000000);
-        rowFolderScan.addView(vDiv);
-        rowFolderScan.addView(itemScan);
-        listLayout.addView(rowFolderScan);
-        listLayout.addView(makeDivider.get());
-
-        // 管理标签
-        listLayout.addView(makeItem.apply(getString(R.string.manage_tags), () -> showManageTagsDialog()));
-        listLayout.addView(makeDivider.get());
-
-        // 语言切换（显示当前选中的语言）
-        String langDisplay = getLanguageDisplayName(LocaleHelper.getSavedLanguage(this));
-        listLayout.addView(makeItem.apply(getString(R.string.language) + "：" + langDisplay, () -> showLanguageDialog()));
-        listLayout.addView(makeDivider.get());
-
-        // 清空列表
-        listLayout.addView(makeItem.apply(getString(R.string.clear_list), () -> showClearListConfirmation()));
-        listLayout.addView(makeDivider.get());
-
-        // 关于（含打赏）
-        listLayout.addView(makeItem.apply(getString(R.string.about_menu), () -> {
-            startActivity(new Intent(MainActivity.this, AboutActivity.class));
-        }));
-
-        android.widget.ScrollView scrollView = new android.widget.ScrollView(this);
-        scrollView.addView(listLayout);
-
-        new AlertDialog.Builder(this).setTitle(R.string.settings).setView(scrollView)
-                .setNegativeButton(R.string.cancel, null).show();
+        android.widget.LinearLayout r = new android.widget.LinearLayout(this);
+        TextView iF = item.apply(getString(R.string.select_folder), this::selectMusicFolder), iS = item.apply(getString(R.string.refresh), this::refreshSongList);
+        android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(0, -2, 1f);
+        iF.setLayoutParams(lp); iS.setLayoutParams(lp); iF.setGravity(17); iS.setGravity(17);
+        r.addView(iF); View v = new View(this); v.setLayoutParams(new android.widget.LinearLayout.LayoutParams(dp1, -1));
+        v.setBackgroundColor(0x30000000); r.addView(v); r.addView(iS); l.addView(r); l.addView(div.get());
+        l.addView(item.apply(getString(R.string.manage_tags), this::showManageTagsDialog)); l.addView(div.get());
+        l.addView(item.apply(getString(R.string.language_menu_item, getLanguageDisplayName(LocaleHelper.getSavedLanguage(this))), this::showLanguageDialog)); l.addView(div.get());
+        l.addView(item.apply(getString(R.string.clear_list), this::showClearListConfirmation)); l.addView(div.get());
+        l.addView(item.apply(getString(R.string.about_menu), () -> startActivity(new Intent(MainActivity.this, AboutActivity.class))));
+        android.widget.ScrollView s = new android.widget.ScrollView(this); s.addView(l);
+        new AlertDialog.Builder(this).setTitle(R.string.settings).setView(s).setNegativeButton(R.string.cancel, null).show();
     }
 
     private boolean isDarkMode() {
-        int nightModeFlags = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
-        return nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        return (getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES;
     }
-
-    private String getLanguageDisplayName(String langCode) {
-        if (LocaleHelper.LANG_ZH.equals(langCode))      return "简体中文";
-        if (LocaleHelper.LANG_ZH_TW.equals(langCode))   return "繁體中文";
-        if (LocaleHelper.LANG_EN.equals(langCode))      return "English";
+    
+    private String getLanguageDisplayName(String c) {
+        if (LocaleHelper.LANG_ZH.equals(c)) return "简体中文";
+        if (LocaleHelper.LANG_ZH_TW.equals(c)) return "繁體中文";
+        if (LocaleHelper.LANG_EN.equals(c)) return "English";
         return getString(R.string.lang_system);
     }
 
     private void showLanguageDialog() {
-        String currentLang = LocaleHelper.getSavedLanguage(this);
-        String[] names = {
-                getString(R.string.lang_system),
-                "简体中文",
-                "繁體中文",
-                "English"
-        };
-        String[] codes = {
-                LocaleHelper.LANG_SYSTEM,
-                LocaleHelper.LANG_ZH,
-                LocaleHelper.LANG_ZH_TW,
-                LocaleHelper.LANG_EN
-        };
-        int checkedIndex = 0;
-        for (int i = 0; i < codes.length; i++) {
-            if (codes[i].equals(currentLang)) { checkedIndex = i; break; }
-        }
-        final int[] selected = {checkedIndex};
-        new AlertDialog.Builder(this)
-                .setTitle(R.string.language)
-                .setSingleChoiceItems(names, checkedIndex, (dialog, which) -> selected[0] = which)
-                .setPositiveButton(R.string.confirm_btn, (dialog, which) -> {
-                    String newLang = codes[selected[0]];
-                    if (!newLang.equals(currentLang)) {
-                        LocaleHelper.setLocale(this, newLang);
-                        recreate();
-                    }
-                })
-                .setNegativeButton(R.string.cancel, null)
-                .show();
+        String cur = LocaleHelper.getSavedLanguage(this);
+        String[] names = {getString(R.string.lang_system), "简体中文", "繁體中文", "English"};
+        String[] codes = {LocaleHelper.LANG_SYSTEM, LocaleHelper.LANG_ZH, LocaleHelper.LANG_ZH_TW, LocaleHelper.LANG_EN};
+        int idx = 0; for (int i = 0; i < codes.length; i++) if (codes[i].equals(cur)) idx = i;
+        final int[] sel = {idx};
+        new AlertDialog.Builder(this).setTitle(R.string.language).setSingleChoiceItems(names, idx, (d, w) -> sel[0] = w)
+                .setPositiveButton(R.string.confirm_btn, (d, w) -> { if (!codes[sel[0]].equals(cur)) { LocaleHelper.setLocale(this, codes[sel[0]]); recreate(); } })
+                .setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showClearListConfirmation() {
-        new AlertDialog.Builder(this).setTitle(R.string.clear_list).setMessage(R.string.confirm_clear_list).setPositiveButton(R.string.confirm_delete, (dialog, which) -> {
-            tagManager.clearAllSongs();
-            allSongs.clear(); currentSongList.clear(); currentSongIndex = -1; isPlaying = false; musicPlayer.stop();
-            songAdapter.updateSongs(currentSongList);
-            textSongInfo.setText(R.string.no_song_playing);
-            updatePlayPauseUI();
-            if (musicService != null) musicService.notifyPlaybackStopped();
-            updateTagSpinner(); updateDirectoryDisplay();
-        }).setNegativeButton(R.string.cancel, null).show();
+        new AlertDialog.Builder(this).setTitle(R.string.clear_list).setMessage(R.string.confirm_clear_list)
+                .setPositiveButton(R.string.confirm_delete, (d, w) -> {
+                    tagManager.clearAllSongs(); allSongs.clear(); currentSongList.clear(); currentSongIndex = -1; isPlaying = false; 
+                    if (musicPlayer != null) musicPlayer.stop();
+                    songAdapter.updateSongs(currentSongList); textSongInfo.setText(R.string.no_song_playing);
+                    updatePlayPauseUI(); if (musicService != null) musicService.notifyPlaybackStopped();
+                    updateTagSpinner(); updateDirectoryDisplay();
+                }).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void selectMusicFolder() {
         try {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivityForResult(intent, REQUEST_FOLDER_ACCESS);
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(i, REQUEST_FOLDER_ACCESS);
         } catch (Exception e) { Toast.makeText(this, R.string.cannot_open_selector, Toast.LENGTH_SHORT).show(); }
     }
 
     private void refreshSongList() {
-        // 第一步：清理已不存在的文件（增量更新，绝对不破坏现有顺序）
-        List<Song> toRemove = new ArrayList<>();
-        for (Song s : allSongs) {
-            if (!new File(s.getPath()).exists()) {
-                tagManager.deleteSong(s.getId());
-                toRemove.add(s);
-            }
-        }
-        
-        // 从内存列表中同步移除，保留剩余项的相对位置
-        allSongs.removeAll(toRemove);
-        currentSongList.removeAll(toRemove);
-
-        // 第二步：异步扫描新歌
+        List<Song> toRem = new ArrayList<>();
+        for (Song s : allSongs) if (!new File(s.getPath()).exists()) { tagManager.deleteSong(s.getId()); toRem.add(s); }
+        allSongs.removeAll(toRem); currentSongList.removeAll(toRem);
         scanForNewSongsAsync();
-        
-        if (!toRemove.isEmpty()) {
-            Toast.makeText(this, getString(R.string.removed_invalid_songs, toRemove.size()), Toast.LENGTH_SHORT).show();
-        }
+        if (!toRem.isEmpty()) Toast.makeText(this, getString(R.string.removed_invalid_songs, toRem.size()), Toast.LENGTH_SHORT).show();
     }
+
     private void scanForNewSongsAsync() {
         new Thread(() -> {
-            List<Song> newSongs = scanForNewSongs();
-            if (newSongs.isEmpty()) {
-                runOnUiThread(() -> {
-                    swipeRefresh.setRefreshing(false);
-                    Toast.makeText(this, R.string.no_new_songs, Toast.LENGTH_SHORT).show();
-                });
+            List<Song> newS = scanForNewSongs();
+            if (newS.isEmpty()) {
+                runOnUiThread(() -> { swipeRefresh.setRefreshing(false); Toast.makeText(this, R.string.no_new_songs, Toast.LENGTH_SHORT).show(); });
                 return;
             }
-
-            allSongs.addAll(newSongs);
-            String query = editSearch.getText().toString().toLowerCase().trim();
-            
+            allSongs.addAll(newS);
+            String q = editSearch.getText().toString().toLowerCase().trim();
             runOnUiThread(() -> {
-                for (Song s : newSongs) {
-                    if (query.isEmpty() || s.getTitle().toLowerCase().contains(query)) {
-                        currentSongList.add(s);
-                    }
-                }
-                songAdapter.updateSongs(currentSongList);
-                updateTagSpinner();
-                swipeRefresh.setRefreshing(false);
-                Toast.makeText(this, getString(R.string.found_new_songs, newSongs.size()), Toast.LENGTH_SHORT).show();
+                for (Song s : newS) if (q.isEmpty() || s.getTitle().toLowerCase().contains(q)) currentSongList.add(s);
+                songAdapter.updateSongs(currentSongList); updateTagSpinner(); swipeRefresh.setRefreshing(false);
+                Toast.makeText(this, getString(R.string.found_new_songs, newS.size()), Toast.LENGTH_SHORT).show();
             });
         }).start();
     }
 
     private List<Song> scanForNewSongs() {
         List<Song> found = new ArrayList<>();
-        List<String> existingPaths = new ArrayList<>();
-        for (Song s : allSongs) existingPaths.add(s.getPath());
-
+        List<String> paths = new ArrayList<>();
+        for (Song s : allSongs) paths.add(s.getPath());
         String d = directoryManager.getMusicDirectory();
         if (d != null && !d.isEmpty()) {
-            // 有自定义目录：只扫描根目录下的音频文件（不递归），子目录属于分类
             File dir = new File(d);
-            File[] files = dir.listFiles();
-            if (files != null) {
-                for (File entry : files) {
-                    if (!entry.isFile()) continue;
-                    String ln = entry.getName().toLowerCase();
+            File[] fs = dir.listFiles();
+            if (fs != null) {
+                for (File f : fs) {
+                    if (!f.isFile()) continue;
+                    String ln = f.getName().toLowerCase();
                     if (!ln.endsWith(".mp3") && !ln.endsWith(".flac") && !ln.endsWith(".wav") && !ln.endsWith(".aac") && !ln.endsWith(".m4a") && !ln.endsWith(".ogg")) continue;
-                    String p = entry.getAbsolutePath();
-                    if (existingPaths.contains(p)) continue;
-                    Song s = new Song();
-                    s.setPath(p);
-                    s.setTitle(Song.formatTitleFromPath(p));
-                    updateMetadataFromFile(s);
-                    s.setCategory("音乐");
-                    s.setId(tagManager.addSong(s));
-                    found.add(s);
+                    String p = f.getAbsolutePath();
+                    if (!paths.contains(p)) {
+                        Song s = new Song(); s.setPath(p); s.setTitle(Song.formatTitleFromPath(p));
+                        updateMetadataFromFile(s); s.setCategory("音乐"); s.setId(tagManager.addSong(s)); found.add(s);
+                    }
                 }
             }
-            // 同时扫描子目录中的音频文件，以子目录名称为分类
-            File[] subdirs = dir.listFiles(File::isDirectory);
-            if (subdirs != null) {
-                for (File subdir : subdirs) {
-                    if (subdir.getName().startsWith(".")) continue;
-                    scanCategoryDirectory(subdir, subdir.getName(), found, existingPaths);
-                }
-            }
+            File[] subs = dir.listFiles(File::isDirectory);
+            if (subs != null) for (File sub : subs) if (!sub.getName().startsWith(".")) scanCategoryDirectory(sub, sub.getName(), found, paths);
         } else {
-            // 无自定义目录：从 MediaStore 递归扫描所有音频文件
             Uri uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
             Cursor c = getContentResolver().query(uri, new String[]{MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.DURATION}, MediaStore.Audio.Media.IS_MUSIC + " != 0", null, null);
             if (c != null) {
                 while (c.moveToNext()) {
                     String p = c.getString(0);
-                    if (!existingPaths.contains(p)) {
+                    if (!paths.contains(p)) {
                         Song s = new Song(); s.setPath(p); s.setTitle(Song.formatTitleFromPath(p));
-                        updateMetadataFromFile(s);
-                        s.setCategory("音乐");
-                        s.setDuration(c.getLong(1));
-                        s.setId(tagManager.addSong(s));
-
-                        found.add(s);
+                        updateMetadataFromFile(s); s.setCategory("音乐"); s.setDuration(c.getLong(1));
+                        s.setId(tagManager.addSong(s)); found.add(s);
                     }
                 }
                 c.close();
@@ -1134,27 +811,19 @@ public class MainActivity extends AppCompatActivity {
         return found;
     }
 
-    /** 扫描某个分类子目录下的所有音频文件（递归该子目录内部） */
-    private void scanCategoryDirectory(File categoryDir, String categoryName, List<Song> found, List<String> existingPaths) {
-        File[] entries = categoryDir.listFiles();
-        if (entries == null) return;
-        for (File entry : entries) {
-            if (entry.isDirectory()) {
-                if (entry.getName().startsWith(".")) continue;
-                scanCategoryDirectory(entry, categoryName, found, existingPaths);
-            } else if (entry.isFile()) {
+    private void scanCategoryDirectory(File d, String n, List<Song> f, List<String> p) {
+        File[] es = d.listFiles(); if (es == null) return;
+        for (File entry : es) {
+            if (entry.isDirectory()) { if (!entry.getName().startsWith(".")) scanCategoryDirectory(entry, n, f, p); }
+            else if (entry.isFile()) {
                 String ln = entry.getName().toLowerCase();
                 if (!ln.endsWith(".mp3") && !ln.endsWith(".flac") && !ln.endsWith(".wav") && !ln.endsWith(".aac") && !ln.endsWith(".m4a") && !ln.endsWith(".ogg")) continue;
-                String p = entry.getAbsolutePath();
-                if (existingPaths.contains(p)) continue;
-                Song s = new Song();
-                s.setPath(p);
-                s.setTitle(Song.formatTitleFromPath(p));
-                updateMetadataFromFile(s);
-                s.setCategory(categoryName);
-                s.setId(tagManager.addSong(s));
-                tagManager.addCategoryTag(categoryName);
-                found.add(s);
+                String path = entry.getAbsolutePath();
+                if (!p.contains(path)) {
+                    Song s = new Song(); s.setPath(path); s.setTitle(Song.formatTitleFromPath(path));
+                    updateMetadataFromFile(s); s.setCategory(n); s.setId(tagManager.addSong(s));
+                    tagManager.addCategoryTag(n); f.add(s);
+                }
             }
         }
     }
@@ -1167,96 +836,80 @@ public class MainActivity extends AppCompatActivity {
                 String art = t.getFirst(FieldKey.ARTIST);
                 s.setArtist(art != null && !art.contains("<unknown>") ? art : "");
                 s.setAlbum(t.getFirst(FieldKey.ALBUM));
-                
-                // 扫描时同步载入内嵌歌词到数据库缓存
                 String lrc = t.getFirst(FieldKey.LYRICS);
-                if (lrc != null && !lrc.trim().isEmpty()) {
-                    s.setLyrics(lrc);
+                if (lrc != null && !lrc.trim().isEmpty()) s.setLyrics(lrc);
+            }
+            s.setCategory("音乐");
+        } catch (Exception e) { s.setArtist(""); s.setAlbum(""); s.setCategory("音乐"); }
+    }
+
+    private void syncPlayerUI() {
+        if (musicService == null) return;
+        MusicPlayer active = musicService.getActivePlayer();
+        isPlaying = active.isPlaying();
+        updatePlayPauseUI();
+        
+        isHomePlayerActive = (active == musicPlayer);
+        
+        String currentPath = active.getCurrentPath();
+        if (currentPath != null && !currentPath.isEmpty()) {
+            boolean found = false;
+            for (int i = 0; i < currentSongList.size(); i++) {
+                if (currentPath.equals(currentSongList.get(i).getPath())) {
+                    currentSongIndex = i; songAdapter.setSelectedPosition(i); found = true;
+                    updateSongUI(currentSongList.get(i), false); break;
                 }
             }
-            
-            // 分类由扫描逻辑根据目录结构确定，此处只读取元数据
-            s.setCategory("音乐");
-        } catch (Exception e) { 
-            s.setArtist(""); 
-            s.setAlbum(""); 
-            s.setCategory("音乐"); 
+            if (!found) for (Song s : allSongs) if (currentPath.equals(s.getPath())) { updateSongUI(s, false); found = true; break; }
+            if (!found) textSongInfo.setText(R.string.now_playing);
         }
     }
 
-    private void playSongManually(Song s, int p) {
-        consecutiveFailures = 0;
-        currentSongIndex = p;
-        shouldResumeFromSavedPosition = false;
-        playSong(s);
-    }
+    private void playSongManually(Song s, int p) { isHomePlayerActive = true; consecutiveFailures = 0; currentSongIndex = p; shouldResumeFromSavedPosition = false; playSong(s); }
+    private void playSong(Song s) { if (s == null) return; updateSongUI(s, true); startPlayback(s); }
 
-    /** 完整播放：更新 UI + 启动播放 + 触发预加载 */
-    private void playSong(Song s) {
-        if (s == null) return;
-        updateSongUI(s);
-        startPlayback(s);
-    }
-
-    /** 更新所有与当前歌曲相关的 UI 状态（不触发播放） */
-    private void updateSongUI(Song s) {
-        // 保存上一次播放歌曲的进度（仅非音乐类写入数据库）
-        if (lastPlayedSong != null && musicPlayer.isPrepared()) {
+    private void updateSongUI(Song s, boolean notifyService) {
+        if (lastPlayedSong != null && musicPlayer != null && musicPlayer.isPrepared()) {
             int pos = musicPlayer.getCurrentPosition();
             String lastCat = lastPlayedSong.getCategory();
-            if (lastCat != null && !lastCat.equals("音乐")) {
-                tagManager.updateLastPosition(lastPlayedSong.getId(), pos);
-            }
+            if (lastCat != null && !lastCat.equals("音乐")) tagManager.updateLastPosition(lastPlayedSong.getId(), pos);
             lastPlayedSong.setLastPosition(pos);
         }
         lastPlayedSong = s;
-
         songAdapter.setSelectedPosition(currentSongIndex);
-        recyclerSongs.scrollToPosition(currentSongIndex);
-
-        // 断点续播
-        String category = s.getCategory();
-        if (category != null && !category.equals("音乐") && s.getLastPosition() > 0) {
-            pendingSeekPosition = s.getLastPosition();
-            Toast.makeText(this, R.string.resumed_position, Toast.LENGTH_SHORT).show();
-        } else if (shouldResumeFromSavedPosition && s.getLastPosition() > 0) {
-            pendingSeekPosition = s.getLastPosition();
+        
+        String cat = s.getCategory();
+        if (notifyService) {
+            if (cat != null && !cat.equals("音乐") && s.getLastPosition() > 0) {
+                pendingSeekPosition = s.getLastPosition();
+                Toast.makeText(this, R.string.resumed_position, Toast.LENGTH_SHORT).show();
+            } else if (shouldResumeFromSavedPosition && s.getLastPosition() > 0) pendingSeekPosition = s.getLastPosition();
         }
+        
         shouldResumeFromSavedPosition = false;
-
-        String art = s.getArtist();
-        if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
-        textSongInfo.setText(s.getTitle() + (art.isEmpty() ? "" : " - " + art));
+        String art = s.getArtist(); if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
+        textSongInfo.setText(getString(R.string.song_info_format, s.getTitle(), art));
         textFullTitle.setText(s.getTitle());
         textFullArtist.setText(art);
         textFullArtist.setVisibility(art.isEmpty() ? View.INVISIBLE : View.VISIBLE);
-        textFullPlayingBarTitle.setText(s.getTitle() + (art.isEmpty() ? "" : " - " + art));
-
-        // 歌词加载耗时较长（大 FLAC 文件可达数秒），放后台执行，避免阻塞 UI 更新
+        textFullPlayingBarTitle.setText(getString(R.string.song_info_format, s.getTitle(), art));
+        
         final String lrcPath = s.getPath();
         new Thread(() -> {
             final List<LrcLine> lines = loadLyricsSync(lrcPath);
             runOnUiThread(() -> lrcAdapter.setLrcLines(lines));
         }).start();
-
-        isPlaying = true;
+        
         updateMediaSessionMetadata(s);
         updateMediaSessionState();
         updatePlayPauseUI();
-        // 通知 Service 更新前台通知
-        if (musicService != null) {
-            musicService.notifyPlaybackStarted(s.getTitle(), art);
-        }
+        if (notifyService && musicService != null) musicService.notifyPlaybackStarted(musicPlayer, s.getTitle(), art);
     }
 
-    /** 同步加载歌词（可在后台线程调用） */
     private List<LrcLine> loadLyricsSync(String path) {
-        // 0. 优先加载内存/数据库中的歌词缓存
         if (currentSongIndex >= 0 && currentSongIndex < currentSongList.size()) {
             Song s = currentSongList.get(currentSongIndex);
-            if (s.getLyrics() != null && !s.getLyrics().trim().isEmpty()) {
-                return parseLrcContent(s.getLyrics());
-            }
+            if (s.getLyrics() != null && !s.getLyrics().trim().isEmpty()) return parseLrcContent(s.getLyrics());
         }
         String embed = extractLyricsFromMetadata(path);
         if (embed != null && !embed.trim().isEmpty()) return parseLrcContent(embed);
@@ -1268,32 +921,21 @@ public class MainActivity extends AppCompatActivity {
         return new ArrayList<>();
     }
 
-    /** 启动播放并触发下一首预加载 */
     private void startPlayback(Song s) {
         musicPlayer.play(this, s.getPath());
-        
-        // 保存歌曲路径到Service，用于app重启后恢复
         if (musicService != null) {
-            String art = s.getArtist();
-            if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
+            String art = s.getArtist(); if (art == null || art.isEmpty() || art.contains("<unknown>")) art = "";
             musicService.updateLastPlayedPath(s.getPath(), s.getTitle(), art, 0);
         }
-        
         triggerPreloadNext();
     }
 
-    /** 预加载列表中的下一首歌曲（当前列表顺序） */
     private void triggerPreloadNext() {
-        if (currentSongIndex >= 0 && currentSongIndex < currentSongList.size() - 1) {
-            Song next = currentSongList.get(currentSongIndex + 1);
-            musicPlayer.preloadNext(next.getPath());
-        }
+        if (currentSongIndex >= 0 && currentSongIndex < currentSongList.size() - 1)
+            musicPlayer.preloadNext(currentSongList.get(currentSongIndex + 1).getPath());
     }
 
-    private void loadLyrics(String path) {
-        List<LrcLine> lines = loadLyricsSync(path);
-        lrcAdapter.setLrcLines(lines);
-    }
+    private void loadLyrics(String path) { lrcAdapter.setLrcLines(loadLyricsSync(path)); }
 
     private String extractLyricsFromMetadata(String path) {
         try {
@@ -1323,444 +965,195 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private List<LrcLine> parseLrcFile(File f) {
-        try {
+        try (BufferedReader br = new BufferedReader(new FileReader(f))) {
             StringBuilder sb = new StringBuilder();
-            BufferedReader br = new BufferedReader(new FileReader(f));
-            String l;
-            while ((l = br.readLine()) != null) sb.append(l).append("\n");
-            br.close();
+            String l; while ((l = br.readLine()) != null) sb.append(l).append("\n");
             return parseLrcContent(sb.toString());
         } catch (Exception e) { return new ArrayList<>(); }
     }
 
     private List<LrcLine> parseLrcContent(String c) {
-        List<LrcLine> lines = new ArrayList<>();
-        if (c == null || c.isEmpty()) return lines;
+        List<LrcLine> lines = new ArrayList<>(); if (c == null || c.isEmpty()) return lines;
         Pattern p = Pattern.compile("\\[(\\d+):(\\d+)(?:[.:](\\d+))?](.*)");
         for (String line : c.split("\n")) {
             Matcher m = p.matcher(line);
             if (m.find()) {
-                long min = Long.parseLong(m.group(1));
-                long sec = Long.parseLong(m.group(2));
-                long ms = 0;
-                if (m.group(3) != null) { ms = Long.parseLong(m.group(3)); if (m.group(3).length() == 2) ms *= 10; }
-                String txt = (m.group(4) != null) ? m.group(4).trim() : "";
+                String g1 = m.group(1), g2 = m.group(2), g3 = m.group(3), g4 = m.group(4);
+                if (g1 == null || g2 == null) continue;
+                long min = Long.parseLong(g1), sec = Long.parseLong(g2), ms = 0;
+                if (g3 != null) { ms = Long.parseLong(g3); if (g3.length() == 2) ms *= 10; }
+                String txt = (g4 != null) ? g4.trim() : "";
                 if (!txt.isEmpty()) lines.add(new LrcLine((min * 60 + sec) * 1000 + ms, txt));
             }
         }
-        Collections.sort(lines);
-        return lines;
+        Collections.sort(lines); return lines;
     }
 
-    private String formatTime(int ms) {
-        int s = (ms / 1000) % 60; int m = (ms / (1000 * 60)) % 60;
-        return String.format(Locale.CHINA, "%02d:%02d", m, s);
-    }
+    private String formatTime(int ms) { return String.format(Locale.CHINA, "%02d:%02d", (ms / 60000) % 60, (ms / 1000) % 60); }
 
     private void togglePlayPause() {
-        if (isPlaying) { 
-            musicPlayer.pause(); 
-            isPlaying = false; 
-            updatePlayPauseUI(); 
-            if (musicService != null) {
-                musicService.notifyPlaybackPaused();
-                musicService.notifyUserPaused(); // 标记为用户主动暂停
+        if (musicService == null) return;
+        MusicPlayer active = musicService.getActivePlayer();
+        if (active.isPlaying()) {
+            active.pause(); isPlaying = false; updatePlayPauseUI();
+            musicService.notifyPlaybackPaused();
+        } else {
+            if (isHomePlayerActive && musicPlayer.isPrepared()) {
+                musicPlayer.resume(); isPlaying = true; updatePlayPauseUI();
+                musicService.notifyPlaybackResumed();
+            } else if (!currentSongList.isEmpty()) {
+                isHomePlayerActive = true;
+                playSong(currentSongList.get(Math.max(0, currentSongIndex)));
             }
-        }
-        else {
-            if (currentSongIndex >= 0 && musicPlayer.isPrepared()) { 
-                musicPlayer.resume(); 
-                isPlaying = true; 
-                updatePlayPauseUI(); 
-                if (musicService != null) {
-                    musicService.notifyPlaybackResumed();
-                    musicService.notifyUserResumed(); // 标记为用户主动恢复
-                }
-            }
-            else if (!currentSongList.isEmpty()) playSong(currentSongList.get(Math.max(0, currentSongIndex)));
         }
         updateMediaSessionState();
-        // 确保 MediaSession 在有内容时处于活跃状态
-        if (musicService != null && mediaSession != null && musicPlayer.isPrepared()) {
-            mediaSession.setActive(true);
-        }
     }
 
     private void playPrevious() {
-        if (!currentSongList.isEmpty()) {
-            musicPlayer.cancelPreload();
-            consecutiveFailures = 0;
-            currentSongIndex = (currentSongIndex - 1 + currentSongList.size()) % currentSongList.size();
-            playSong(currentSongList.get(currentSongIndex));
-        }
+        if (currentSongList.isEmpty()) return;
+        isHomePlayerActive = true;
+        musicPlayer.cancelPreload(); consecutiveFailures = 0;
+        currentSongIndex = (currentSongIndex - 1 + currentSongList.size()) % currentSongList.size();
+        playSong(currentSongList.get(currentSongIndex));
     }
-    private void playNext() { 
-        if (currentSongList.isEmpty()) {
-            isPlaying = false; 
-            updatePlayPauseUI();
-            if (musicService != null) musicService.notifyPlaybackStopped();
-            return;
-        }
 
-        // 智能逻辑：
-        // 如果是评书/相声，强制执行列表顺序播放（已经在 filterSongs 中按名称排过序了）
-        // 如果是音乐类，也按当前列表顺序播放（如果点过随机，列表已经是随机序了）
+    private void playNext() {
+        if (currentSongList.isEmpty()) { isPlaying = false; updatePlayPauseUI(); if (musicService != null) musicService.notifyPlaybackStopped(); return; }
+        isHomePlayerActive = true;
         currentSongIndex = (currentSongIndex + 1) % currentSongList.size();
-        Song next = currentSongList.get(currentSongIndex);
-
-        // 优先尝试 swap 预加载（零等待）
-        int swapDuration = musicPlayer.trySwapToPreloaded(next.getPath());
-        if (swapDuration >= 0) {
-            // swap 成功：更新 UI（不经过 onPrepared，避免冗余操作）
-            updateSongUI(next);
-            seekProgress.setMax(swapDuration);
-            seekMiniProgress.setMax(swapDuration);
-            textTotalTime.setText(formatTime(swapDuration));
-            consecutiveFailures = 0;
-            updateMediaSessionState();
-            triggerPreloadNext(); // 预加载下下首
-        } else {
-            playSong(next); // 常规流程：UI + play + preload
-        }
+        playSong(currentSongList.get(currentSongIndex));
     }
 
     private void openTagPlayer() { startActivityForResult(new Intent(this, TagPlayerActivity.class), REQUEST_TAG_PLAYER); }
     private void shuffleSongs() {
         if (!allSongs.isEmpty()) {
-            // 关键修复：直接打乱真相源 allSongs
-            TrueRandomShuffler.shuffle(allSongs);
-            
-            // 持久化排序结果到数据库
-            tagManager.updateSongsOrder(allSongs);
-            
-            // 立即重新执行当前过滤逻辑（无论是全部还是某个标签），保持打乱后的新顺序
+            TrueRandomShuffler.shuffle(allSongs); tagManager.updateSongsOrder(allSongs);
             filterSongs(editSearch.getText().toString());
-            
-            // 播放新顺序下的第一首
-            if (!currentSongList.isEmpty()) {
-                currentSongIndex = 0;
-                playSong(currentSongList.get(0));
-            }
+            if (!currentSongList.isEmpty()) { currentSongIndex = 0; playSong(currentSongList.get(0)); }
             Toast.makeText(this, R.string.shuffle_saved, Toast.LENGTH_SHORT).show();
         }
     }
 
     private void showManageTagsDialog() {
-        List<Tag> tags = tagManager.getUserTags();
-        String[] tagNames = new String[tags.size()];
-        for (int i = 0; i < tags.size(); i++) tagNames[i] = tags.get(i).getName();
-        new AlertDialog.Builder(this).setTitle(R.string.manage_tags).setItems(tagNames, (dialog, which) -> showTagOptionsDialog(tags.get(which))).setNeutralButton(R.string.add_tag, (dialog, which) -> showCreateTagDialog()).setNegativeButton(R.string.cancel, null).show();
+        List<Tag> tags = tagManager.getUserTags(); String[] names = new String[tags.size()];
+        for (int i = 0; i < tags.size(); i++) names[i] = tags.get(i).getName();
+        new AlertDialog.Builder(this).setTitle(R.string.manage_tags).setItems(names, (d, w) -> showTagOptionsDialog(tags.get(w))).setNeutralButton(R.string.add_tag, (d, w) -> showCreateTagDialog()).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showCreateTagDialog() {
-        final EditText et = new EditText(this);
-        et.setHint(R.string.tag_name_hint);
-        new AlertDialog.Builder(this).setTitle(R.string.add_tag).setView(et).setPositiveButton(R.string.confirm_btn, (dialog, which) -> {
-            String n = et.getText().toString().trim();
-            if (!n.isEmpty()) { tagManager.addTag(n); updateTagSpinner(); }
+        final EditText et = new EditText(this); et.setHint(R.string.tag_name_hint);
+        new AlertDialog.Builder(this).setTitle(R.string.add_tag).setView(et).setPositiveButton(R.string.confirm_btn, (d, w) -> {
+            String n = et.getText().toString().trim(); if (!n.isEmpty()) { tagManager.addTag(n); updateTagSpinner(); }
         }).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showTagOptionsDialog(Tag t) {
-        String[] opts = { getString(R.string.shuffle_tag) + " \"" + t.getName() + "\"", getString(R.string.delete_tag) };
-        new AlertDialog.Builder(this).setTitle(getString(R.string.tag_label, t.getName())).setItems(opts, (dialog, which) -> {
-            if (which == 0) { isTagFiltered = true; showSongsForTag(t.getId()); if (!currentSongList.isEmpty()) shuffleSongs(); }
-            else if (which == 1) showDeleteTagDialog(t);
+        String[] opts = { getString(R.string.shuffle_tag_format, t.getName()), getString(R.string.delete_tag) };
+        new AlertDialog.Builder(this).setTitle(getString(R.string.tag_label, t.getName())).setItems(opts, (d, w) -> {
+            if (w == 0) { showSongsForTag(t.getId()); if (!currentSongList.isEmpty()) shuffleSongs(); }
+            else if (w == 1) showDeleteTagDialog(t);
         }).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showDeleteTagDialog(Tag t) {
-        new AlertDialog.Builder(this).setTitle(R.string.confirm_delete).setMessage(R.string.confirm_delete_tag).setPositiveButton(R.string.confirm_delete, (dialog, which) -> {
+        new AlertDialog.Builder(this).setTitle(R.string.confirm_delete).setMessage(R.string.confirm_delete_tag).setPositiveButton(R.string.confirm_delete, (d, w) -> {
             tagManager.deleteTag(t.getId()); updateTagSpinner(); updateSongList();
         }).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showSongOptionsDialog(Song s) {
-        String ext = "";
-        int dot = s.getPath().lastIndexOf(".");
-        if (dot != -1) ext = s.getPath().substring(dot + 1).toUpperCase();
-        
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        android.content.Context dialogContext = builder.getContext();
-        float density = dialogContext.getResources().getDisplayMetrics().density;
-        
-        android.widget.LinearLayout header = new android.widget.LinearLayout(dialogContext);
-        header.setOrientation(android.widget.LinearLayout.VERTICAL);
-        header.setPadding((int)(24 * density), (int)(20 * density), (int)(24 * density), (int)(8 * density));
-        
-        TextView title = new TextView(dialogContext);
-        title.setText(s.getTitle());
-        title.setTextSize(18);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        
-        // 彻底解决颜色对比度问题：使用更稳健的主题属性读取逻辑
+        String ext = ""; int dot = s.getPath().lastIndexOf("."); if (dot != -1) ext = s.getPath().substring(dot + 1).toUpperCase();
+        AlertDialog.Builder b = new AlertDialog.Builder(this); Context dc = b.getContext(); float den = dc.getResources().getDisplayMetrics().density;
+        android.widget.LinearLayout h = new android.widget.LinearLayout(dc); h.setOrientation(android.widget.LinearLayout.VERTICAL); h.setPadding((int)(24*den), (int)(20*den), (int)(24*den), (int)(8*den));
+        TextView title = new TextView(dc); title.setText(s.getTitle()); title.setTextSize(18); title.setTypeface(null, android.graphics.Typeface.BOLD);
         android.util.TypedValue tv = new android.util.TypedValue();
-        int titleColor;
-        if (dialogContext.getTheme().resolveAttribute(android.R.attr.textColorPrimary, tv, true)) {
-            titleColor = (tv.resourceId != 0) ? ContextCompat.getColor(dialogContext, tv.resourceId) : tv.data;
-        } else {
-            titleColor = android.graphics.Color.WHITE; // 针对深色模式的保底
-        }
-        title.setTextColor(titleColor);
-        
-        TextView info = new TextView(dialogContext);
-        String art = s.getArtist();
-        if (art == null || art.isEmpty() || art.contains("<unknown>")) art = getString(R.string.unknown_artist);
-        info.setText(art + " • " + ext);
-        info.setTextSize(13);
-        info.setPadding(0, (int)(4 * density), 0, 0);
-        
-        int infoColor;
-        if (dialogContext.getTheme().resolveAttribute(android.R.attr.textColorSecondary, tv, true)) {
-            infoColor = (tv.resourceId != 0) ? ContextCompat.getColor(dialogContext, tv.resourceId) : tv.data;
-        } else {
-            infoColor = android.graphics.Color.LTGRAY;
-        }
-        info.setTextColor(infoColor);
-        
-        header.addView(title);
-        header.addView(info);
-
+        title.setTextColor(dc.getTheme().resolveAttribute(android.R.attr.textColorPrimary, tv, true) ? ((tv.resourceId != 0) ? ContextCompat.getColor(dc, tv.resourceId) : tv.data) : -1);
+        TextView info = new TextView(dc); String art = s.getArtist(); if (art == null || art.isEmpty() || art.contains("<unknown>")) art = getString(R.string.unknown_artist);
+        info.setText(getString(R.string.song_options_info_format, art, ext)); info.setTextSize(13); info.setPadding(0, (int)(4*den), 0, 0);
+        info.setTextColor(dc.getTheme().resolveAttribute(android.R.attr.textColorSecondary, tv, true) ? ((tv.resourceId != 0) ? ContextCompat.getColor(dc, tv.resourceId) : tv.data) : -3355444);
+        h.addView(title); h.addView(info);
         String[] opts = { getString(R.string.edit_info), getString(R.string.edit_tags), getString(R.string.delete_song) };
-        builder.setCustomTitle(header)
-            .setItems(opts, (dialog, which) -> {
-                if (which == 0) showEditSongInfoDialog(s);
-                else if (which == 1) showTagSongDialog(s);
-                else if (which == 2) showDeleteSongDialog(s);
-            })
-            .setNegativeButton(R.string.cancel, null)
-            .show();
+        b.setCustomTitle(h).setItems(opts, (d, w) -> {
+            if (w == 0) showEditSongInfoDialog(s); else if (w == 1) showTagSongDialog(s); else if (w == 2) showDeleteSongDialog(s);
+        }).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showEditSongInfoDialog(Song s) {
-        android.widget.LinearLayout layout = new android.widget.LinearLayout(this);
-        layout.setOrientation(android.widget.LinearLayout.VERTICAL);
-        layout.setPadding(50, 40, 50, 10);
-
-        final EditText editArtist = new EditText(this);
-        editArtist.setHint(R.string.artist_hint);
-        editArtist.setText(s.getArtist());
-        
-        TextView labelLyrics = new TextView(this);
-        labelLyrics.setText("\n" + getString(R.string.lyrics_label));
-        labelLyrics.setTextSize(14);
-        
-        final EditText editLyrics = new EditText(this);
-        editLyrics.setHint(R.string.lyrics_hint);
-        editLyrics.setText(s.getLyrics());
-        editLyrics.setMinLines(5);
-        editLyrics.setGravity(android.view.Gravity.TOP);
-
-        layout.addView(new TextView(this){{setText(R.string.artist_label);}});
-        layout.addView(editArtist);
-        layout.addView(labelLyrics);
-        layout.addView(editLyrics);
-
-        new AlertDialog.Builder(this)
-            .setTitle(R.string.edit_info)
-            .setView(layout)
-            .setPositiveButton(R.string.sync_to_file, (dialog, which) -> {
-                // Android 11+ 权限检查
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    if (!android.os.Environment.isExternalStorageManager()) {
-                        showManageStoragePermissionDialog();
-                        return;
-                    }
-                }
-
-                String newArtist = editArtist.getText().toString().trim();
-                String newLyrics = editLyrics.getText().toString().trim();
-                
-                // 先更新内存和数据库（保证数据不丢失）
-                s.setArtist(newArtist);
-                s.setLyrics(newLyrics);
-                tagManager.updateSongMetadata(s.getId(), newArtist, newLyrics);
-                
-                // 如果当前正在播放这首歌，刷新歌词显示
-                if (lastPlayedSong != null && lastPlayedSong.getId() == s.getId()) {
-                    loadLyrics(s.getPath());
-                }
-                
-                updateSongList();
-                
-                // 尝试安全写入音频文件
-                saveMetadataToFile(s, newArtist, newLyrics);
-            })
-            .setNeutralButton(R.string.save_only, (dialog, which) -> {
-                String newArtist = editArtist.getText().toString().trim();
-                String newLyrics = editLyrics.getText().toString().trim();
-                
-                s.setArtist(newArtist);
-                s.setLyrics(newLyrics);
-                tagManager.updateSongMetadata(s.getId(), newArtist, newLyrics);
-                
-                if (lastPlayedSong != null && lastPlayedSong.getId() == s.getId()) {
-                    loadLyrics(s.getPath());
-                }
-                
-                updateSongList();
-                Toast.makeText(this, R.string.info_saved, Toast.LENGTH_SHORT).show();
-            })
-            .setNegativeButton(R.string.cancel, null)
-            .show();
+        android.widget.LinearLayout l = new android.widget.LinearLayout(this); l.setOrientation(android.widget.LinearLayout.VERTICAL); l.setPadding(50, 40, 50, 10);
+        final EditText eA = new EditText(this); eA.setHint(R.string.artist_hint); eA.setText(s.getArtist());
+        TextView lL = new TextView(this); lL.setText(getString(R.string.lyrics_label_with_newline)); lL.setTextSize(14);
+        final EditText eL = new EditText(this); eL.setHint(R.string.lyrics_hint); eL.setText(s.getLyrics()); eL.setMinLines(5); eL.setGravity(android.view.Gravity.TOP);
+        l.addView(new androidx.appcompat.widget.AppCompatTextView(this){{setText(R.string.artist_label);}}); l.addView(eA); l.addView(lL); l.addView(eL);
+        new AlertDialog.Builder(this).setTitle(R.string.edit_info).setView(l).setPositiveButton(R.string.sync_to_file, (d, w) -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !android.os.Environment.isExternalStorageManager()) { showManageStoragePermissionDialog(); return; }
+            String nA = eA.getText().toString().trim(), nL = eL.getText().toString().trim();
+            s.setArtist(nA); s.setLyrics(nL); tagManager.updateSongMetadata(s.getId(), nA, nL);
+            if (lastPlayedSong != null && lastPlayedSong.getId() == s.getId()) loadLyrics(s.getPath());
+            updateSongList(); saveMetadataToFile(s, nA, nL);
+        }).setNeutralButton(R.string.save_only, (d, w) -> {
+            String nA = eA.getText().toString().trim(), nL = eL.getText().toString().trim();
+            s.setArtist(nA); s.setLyrics(nL); tagManager.updateSongMetadata(s.getId(), nA, nL);
+            if (lastPlayedSong != null && lastPlayedSong.getId() == s.getId()) loadLyrics(s.getPath());
+            updateSongList(); Toast.makeText(this, R.string.info_saved, Toast.LENGTH_SHORT).show();
+        }).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showManageStoragePermissionDialog() {
-        new AlertDialog.Builder(this)
-            .setTitle(R.string.need_file_permission)
-            .setMessage(R.string.file_permission_message)
-            .setPositiveButton(R.string.go_enable, (dialog, which) -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    try {
-                        Intent permIntent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                        permIntent.addCategory("android.intent.category.DEFAULT");
-                        permIntent.setData(Uri.parse(String.format("package:%s", getPackageName())));
-                        startActivity(permIntent);
-                    } catch (Exception e) {
-                        Intent permIntent = new Intent();
-                        permIntent.setAction(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
-                        startActivity(permIntent);
-                    }
-                }
-            })
-            .setNegativeButton(R.string.later, null)
-            .show();
+        new AlertDialog.Builder(this).setTitle(R.string.need_file_permission).setMessage(R.string.file_permission_message).setPositiveButton(R.string.go_enable, (d, w) -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { try { startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))); } catch (Exception e) { startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)); } }
+        }).setNegativeButton(R.string.later, null).show();
     }
 
     private void saveMetadataToFile(Song s, String artist, String lyrics) {
-        // 先停止播放器（不释放！stop()只做 reset，MediaPlayer 仍可复用）
-        if (musicPlayer != null) {
-            musicPlayer.stop();
-        }
-
+        if (musicPlayer != null) musicPlayer.stop();
         new Thread(() -> {
             try {
-                // 等待文件句柄释放
-                Thread.sleep(500);
-
-                // 安全设置：setAndroid 帮助处理 Android 文件系统兼容性
-                // 默认不使用 setNoBackup，让 jaudiotagger 创建备份文件，防止写入中断时损坏
-                org.jaudiotagger.tag.TagOptionSingleton.getInstance().setAndroid(true);
-                
-                File file = new File(s.getPath());
-                AudioFile af = AudioFileIO.read(file);
-                
-                org.jaudiotagger.tag.Tag t = af.getTag();
-                if (t == null) {
-                    t = af.createDefaultTag();
-                    af.setTag(t);
-                }
-                
-                t.deleteField(FieldKey.ARTIST);
-                t.setField(FieldKey.ARTIST, artist);
-                
-                if (lyrics != null && !lyrics.trim().isEmpty()) {
-                    t.deleteField(FieldKey.LYRICS);
-                    t.setField(FieldKey.LYRICS, lyrics);
-                } else {
-                    t.deleteField(FieldKey.LYRICS);
-                }
-
-                // 写入文件（jaudiotagger 会先创建备份，再覆写原文件）
+                Thread.sleep(500); org.jaudiotagger.tag.TagOptionSingleton.getInstance().setAndroid(true);
+                AudioFile af = AudioFileIO.read(new File(s.getPath())); org.jaudiotagger.tag.Tag t = af.getTag();
+                if (t == null) { t = af.createDefaultTag(); af.setTag(t); }
+                t.deleteField(FieldKey.ARTIST); t.setField(FieldKey.ARTIST, artist);
+                if (lyrics != null && !lyrics.trim().isEmpty()) { t.deleteField(FieldKey.LYRICS); t.setField(FieldKey.LYRICS, lyrics); } else t.deleteField(FieldKey.LYRICS);
                 af.commit();
-                
-                // 写入后验证文件完整性
-                try {
-                    AudioFile verify = AudioFileIO.read(file);
-                    if (verify != null && verify.getAudioHeader() != null) {
-                        runOnUiThread(() -> Toast.makeText(this, R.string.info_synced, Toast.LENGTH_SHORT).show());
-                    } else {
-                        runOnUiThread(() -> Toast.makeText(this, R.string.file_verify_failed_msg, Toast.LENGTH_LONG).show());
-                    }
-                } catch (Exception ve) {
-                    runOnUiThread(() -> new AlertDialog.Builder(this)
-                        .setTitle(R.string.file_verify_failed)
-                        .setMessage(R.string.file_corrupted_msg)
-                        .setPositiveButton(R.string.confirm_btn, null)
-                        .show());
-                }
-                
+                runOnUiThread(() -> Toast.makeText(this, R.string.info_synced, Toast.LENGTH_SHORT).show());
             } catch (Exception e) {
-                final String msg = e.getMessage();
-                runOnUiThread(() -> new AlertDialog.Builder(this)
-                    .setTitle(R.string.file_sync_failed)
-                    .setMessage(getString(R.string.file_sync_failed_msg, msg != null ? msg : "unknown"))
-                    .setPositiveButton(R.string.confirm_btn, null)
-                    .show());
+                runOnUiThread(() -> Toast.makeText(this, R.string.file_sync_failed, Toast.LENGTH_SHORT).show());
             }
         }).start();
     }
 
     private void showTagSongDialog(Song s) {
-        List<Tag> all = tagManager.getUserTags();
-        if (all.isEmpty()) { Toast.makeText(this, R.string.create_tag_first, Toast.LENGTH_SHORT).show(); return; }
-        List<String> cur = tagManager.getTagsForSong(s.getId());
-        String[] ns = new String[all.size()];
-        boolean[] ck = new boolean[all.size()];
+        List<Tag> all = tagManager.getUserTags(); if (all.isEmpty()) { Toast.makeText(this, R.string.create_tag_first, Toast.LENGTH_SHORT).show(); return; }
+        List<String> cur = tagManager.getTagsForSong(s.getId()); String[] ns = new String[all.size()]; boolean[] ck = new boolean[all.size()];
         for (int i = 0; i < all.size(); i++) { ns[i] = all.get(i).getName(); ck[i] = cur.contains(all.get(i).getName()); }
-        new AlertDialog.Builder(this).setTitle(R.string.select_tags).setMultiChoiceItems(ns, ck, (dialog, which, isChecked) -> ck[which] = isChecked).setPositiveButton(R.string.confirm_btn, (dialog, which) -> {
+        new AlertDialog.Builder(this).setTitle(R.string.select_tags).setMultiChoiceItems(ns, ck, (d, w, isC) -> ck[w] = isC).setPositiveButton(R.string.confirm_btn, (d, w) -> {
             for (int i = 0; i < all.size(); i++) { if (ck[i]) tagManager.addTagToSong(s.getId(), all.get(i).getId()); else tagManager.removeTagFromSong(s.getId(), all.get(i).getId()); }
-            // 实时更新当前歌曲的内存标签列表，确保过滤逻辑准确
-            s.setTags(tagManager.getTagsForSong(s.getId()));
-            updateSongList(); // 立即重新执行当前过滤
-            updateTagSpinner(); // 立即刷新下拉框中的数字
-        }).setNeutralButton(R.string.add_tag, (dialog, which) -> showCreateTagDialog()).setNegativeButton(R.string.cancel, null).show();
+            s.setTags(tagManager.getTagsForSong(s.getId())); updateSongList(); updateTagSpinner();
+        }).setNeutralButton(R.string.add_tag, (d, w) -> showCreateTagDialog()).setNegativeButton(R.string.cancel, null).show();
     }
 
     private void showDeleteSongDialog(Song s) {
-        new AlertDialog.Builder(this).setTitle(R.string.confirm_delete).setMessage(getString(R.string.delete_message) + "\n\n歌曲: " + s.getTitle()).setPositiveButton(R.string.confirm_delete, (dialog, which) -> {
-            tagManager.deleteSong(s.getId()); allSongs.remove(s); currentSongList.remove(s); 
-            songAdapter.updateSongs(currentSongList);
-            updateTagSpinner();
-        }).setNegativeButton(R.string.cancel, null).show();
+        new AlertDialog.Builder(this).setTitle(R.string.confirm_delete).setMessage(getString(R.string.delete_message_format, s.getTitle()))
+                .setPositiveButton(R.string.confirm_delete, (d, w) -> { tagManager.deleteSong(s.getId()); allSongs.remove(s); currentSongList.remove(s); songAdapter.updateSongs(currentSongList); updateTagSpinner(); })
+                .setNegativeButton(R.string.cancel, null).show();
     }
 
-    private void showSongsForTag(long id) {
-        currentSongList.clear();
-        currentSongList.addAll(tagManager.getSongsForTag(id));
-        songAdapter.updateSongs(currentSongList);
-        selectTagInSpinner(id);
-    }
+    private void showSongsForTag(long id) { currentSongList.clear(); currentSongList.addAll(tagManager.getSongsForTag(id)); songAdapter.updateSongs(currentSongList); selectTagInSpinner(id); }
 
-    @SuppressWarnings("unchecked")
     private void selectTagInSpinner(long id) {
-        List<Tag> allTags = tagManager.getAllTags();
-        String targetName = "";
-        String targetType = "none";
-        if (id != -1) {
-            for (Tag t : allTags) {
-                if (t.getId() == id) {
-                    targetName = t.getName();
-                    // 判断是分类还是标签
-                    if ("category".equals(t.getType())) {
-                        targetType = "category";
-                    } else {
-                        targetType = "tag";
-                    }
-                    break;
-                }
-            }
-        }
-        
-        selectedCategory = targetName;
-        selectedFilterType = targetType;
-        isTagFiltered = !"none".equals(targetType);
-        updateTagSpinner();
+        List<Tag> allT = tagManager.getAllTags(); String tN = ""; String tT = "none";
+        if (id != -1) for (Tag t : allT) if (t.getId() == id) { tN = t.getName(); tT = "category".equals(t.getType()) ? "category" : "tag"; break; }
+        selectedCategory = tN; selectedFilterType = tT; updateTagSpinner();
     }
 
     @Override
     protected void onActivityResult(int request, int result, @Nullable Intent data) {
         super.onActivityResult(request, result, data);
         if (request == REQUEST_FOLDER_ACCESS && result == RESULT_OK && data != null) {
-            String path = getPathFromUri(data.getData());
-            if (path != null) { directoryManager.setMusicDirectory(path); updateDirectoryDisplay(); setupDirectoryObserver(); refreshSongList(); }
+            String p = getPathFromUri(data.getData()); if (p != null) { directoryManager.setMusicDirectory(p); updateDirectoryDisplay(); setupDirectoryObserver(); refreshSongList(); }
         } else if (request == REQUEST_TAG_PLAYER) {
-            if (result == TagPlayerActivity.RESULT_DISCOVER) {
-                // 从标签播放页返回并切换到发现页
-                bottomNavigation.setSelectedItemId(R.id.nav_discovery);
-            } else if (result == RESULT_OK && data != null) {
-                long id = data.getLongExtra("tagId", -1);
-                if (id != -1) { selectTagInSpinner(id); if (!currentSongList.isEmpty()) shuffleSongs(); }
+            if (result == TagPlayerActivity.RESULT_DISCOVER) bottomNavigation.setSelectedItemId(R.id.nav_discovery);
+            else if (result == RESULT_OK && data != null) {
+                long id = data.getLongExtra("tagId", -1); if (id != -1) { selectTagInSpinner(id); if (!currentSongList.isEmpty()) shuffleSongs(); }
             }
         }
     }
@@ -1774,149 +1167,56 @@ public class MainActivity extends AppCompatActivity {
         return null;
     }
 
-    private void initMediaSession() {
-        // MediaSession 的 Callback 已经在 MusicPlayerService 中设置
-        // Activity 不需要重复设置，这样即使 Activity 在后台被销毁，蓝牙耳机也能正常控制
-        if (mediaSession == null) return;
-        
-        // 设置标志位
-        mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
-    }
+    private void initMediaSession() { if (mediaSession == null) return; mediaSession.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS); }
 
     private void updateMediaSessionMetadata(Song s) {
         if (mediaSession == null || s == null) return;
         try {
-            MediaMetadata.Builder builder = new MediaMetadata.Builder()
-                    .putString(MediaMetadata.METADATA_KEY_TITLE, s.getTitle() != null ? s.getTitle() : getString(R.string.unknown_song))
-                    .putString(MediaMetadata.METADATA_KEY_ARTIST, s.getArtist() != null ? s.getArtist() : "")
-                    .putString(MediaMetadata.METADATA_KEY_ALBUM, s.getAlbum() != null ? s.getAlbum() : "")
-                    .putLong(MediaMetadata.METADATA_KEY_DURATION, s.getDuration());
-            
-            // 安全读取封面
+            MediaMetadata.Builder b = new MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, s.getTitle() != null ? s.getTitle() : getString(R.string.unknown_song)).putString(MediaMetadata.METADATA_KEY_ARTIST, s.getArtist() != null ? s.getArtist() : "").putString(MediaMetadata.METADATA_KEY_ALBUM, s.getAlbum() != null ? s.getAlbum() : "").putLong(MediaMetadata.METADATA_KEY_DURATION, s.getDuration());
             try {
-                AudioFile af = AudioFileIO.read(new File(s.getPath()));
-                org.jaudiotagger.tag.Tag t = af.getTag();
+                AudioFile af = AudioFileIO.read(new File(s.getPath())); org.jaudiotagger.tag.Tag t = af.getTag();
                 if (t != null && t.getFirstArtwork() != null) {
-                    byte[] data = t.getFirstArtwork().getBinaryData();
-                    if (data != null && data.length > 0) {
-                        Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
-                        if (bitmap != null) {
-                            builder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bitmap);
-                        }
-                    }
+                    byte[] d = t.getFirstArtwork().getBinaryData();
+                    if (d != null && d.length > 0) { Bitmap bm = BitmapFactory.decodeByteArray(d, 0, d.length); if (bm != null) b.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bm); }
                 }
-            } catch (Exception e) {
-                // 封面读取失败不应导致闪退
-            }
-            mediaSession.setMetadata(builder.build());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+            } catch (Exception ignored) {}
+            mediaSession.setMetadata(b.build());
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
     private void updateMediaSessionState() {
         if (mediaSession == null) return;
         try {
             int state = isPlaying ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
-            long position = 0;
-            if (musicPlayer != null && musicPlayer.isPrepared()) {
-                position = musicPlayer.getCurrentPosition();
-            }
-            
-            PlaybackState.Builder stateBuilder = new PlaybackState.Builder()
-                    .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE |
-                            PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS |
-                            PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_STOP | PlaybackState.ACTION_SEEK_TO)
-                    .setState(state, position, 1.0f);
-            mediaSession.setPlaybackState(stateBuilder.build());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+            long pos = (musicPlayer != null && musicPlayer.isPrepared()) ? musicPlayer.getCurrentPosition() : 0;
+            mediaSession.setPlaybackState(new PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_STOP | PlaybackState.ACTION_SEEK_TO).setState(state, pos, 1.0f).build());
+        } catch (Exception e) { e.printStackTrace(); }
     }
 
+    @Override protected void onPause() { super.onPause(); savePlaybackState(); }
+    @Override protected void onResume() { super.onResume(); if (serviceBound && musicService != null) { musicService.setCallback(serviceCallback); syncPlayerUI(); } }
     @Override
-    protected void onPause() {
-        super.onPause();
+    protected void onDestroy() {
         savePlaybackState();
-    }
-
-    @Override
-    protected void onStop() {
-        super.onStop();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        // 恢复 Service 回调，确保蓝牙按键能控制当前 Activity
-        if (serviceBound && musicService != null) {
-            musicService.setCallback(serviceCallback);
-            // 同步播放状态
-            if (musicPlayer != null && musicPlayer.isPlaying()) {
-                isPlaying = true;
-                updatePlayPauseUI();
-            }
-        }
-    }
-
-    @Override
-    protected void onDestroy() { 
-        savePlaybackState();
-
-        // 解绑 Service（不释放 MusicPlayer，它属于 Service）
         if (serviceBound) {
-            if (musicService != null) musicService.setCallback(null);
+            if (musicService != null) { musicService.setCallback(null); musicService.setHomePlaybackListener(null); }
             try { unbindService(serviceConnection); } catch (Exception ignored) {}
             serviceBound = false;
         }
-        // 如果未在播放，通知 Service 可以停止
-        if (musicService != null && !isPlaying) {
-            musicService.notifyPlaybackStopped();
-            musicService.stopSelf();
-        }
         musicService = null;
-
-        super.onDestroy(); 
-        if (directoryObserver != null) {
-            directoryObserver.stopWatching();
-            directoryObserver = null;
-        }
-        // 耳机断开监听已迁移到 Service，此处不再需要注销
-        if (mediaSession != null) {
-            // MediaSession 属于 Service，Activity 不再释放
-        }
-        // MusicPlayer 属于 Service，Activity 不再释放
+        super.onDestroy();
+        if (directoryObserver != null) { directoryObserver.stopWatching(); directoryObserver = null; }
     }
 
     private void setupDirectoryObserver() {
-        // 先停止旧的监听器
-        if (directoryObserver != null) {
-            directoryObserver.stopWatching();
-            directoryObserver = null;
-        }
-        
-        String dirPath = directoryManager.getMusicDirectory();
-        if (dirPath == null || dirPath.isEmpty()) return;
-        
-        final File watchDir = new File(dirPath);
-        if (!watchDir.exists() || !watchDir.isDirectory()) return;
-        
-        directoryObserver = new android.os.FileObserver(watchDir.getAbsolutePath(),
-                android.os.FileObserver.CREATE | android.os.FileObserver.DELETE |
-                android.os.FileObserver.MOVED_FROM | android.os.FileObserver.MOVED_TO) {
-            @Override
-            public void onEvent(int event, String name) {
-                if (name == null) return;
-                // 只关注目录的创建/删除/移动事件
-                int mask = event & android.os.FileObserver.ALL_EVENTS;
-                if (mask == android.os.FileObserver.CREATE || mask == android.os.FileObserver.DELETE ||
-                    mask == android.os.FileObserver.MOVED_FROM || mask == android.os.FileObserver.MOVED_TO) {
-                    File changed = new File(watchDir, name);
-                    if (changed.isDirectory() && !name.startsWith(".")) {
-                        runOnUiThread(() -> {
-                            updateCategoryBar();
-                        });
-                    }
+        if (directoryObserver != null) { directoryObserver.stopWatching(); directoryObserver = null; }
+        String dP = directoryManager.getMusicDirectory(); if (dP == null || dP.isEmpty()) return;
+        final File wD = new File(dP); if (!wD.exists() || !wD.isDirectory()) return;
+        directoryObserver = new android.os.FileObserver(wD.getAbsolutePath(), android.os.FileObserver.CREATE | android.os.FileObserver.DELETE | android.os.FileObserver.MOVED_FROM | android.os.FileObserver.MOVED_TO) {
+            @Override public void onEvent(int event, String name) {
+                if (name == null) return; int mask = event & android.os.FileObserver.ALL_EVENTS;
+                if (mask == android.os.FileObserver.CREATE || mask == android.os.FileObserver.DELETE || mask == android.os.FileObserver.MOVED_FROM || mask == android.os.FileObserver.MOVED_TO) {
+                    if (new File(wD, name).isDirectory() && !name.startsWith(".")) runOnUiThread(() -> updateCategoryBar());
                 }
             }
         };

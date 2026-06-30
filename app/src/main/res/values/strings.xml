@@ -108,4 +108,12 @@
     <string name="battery_optimization_title">电池优化建议</string>
     <string name="battery_optimization_message">为了保证在后台长时间播放不被系统中断，建议将本应用设为“不进行电池优化”。</string>
     <string name="go_set">去设置</string>
+    <string name="song_info_format">%1$s - %2$s</string>
+    <string name="filter_chip_format">%1$s (%2$d)</string>
+    <string name="current_directory_prefix">当前加载目录：%s</string>
+    <string name="language_menu_item">语言：%s</string>
+    <string name="shuffle_tag_format">随机播放「%s」</string>
+    <string name="song_options_info_format">%1$s • %2$s</string>
+    <string name="lyrics_label_with_newline">\n歌词 (支持多行):</string>
+    <string name="delete_message_format">确定要从列表中删除这首歌吗？\n\n歌曲: %s</string>
 </resources>

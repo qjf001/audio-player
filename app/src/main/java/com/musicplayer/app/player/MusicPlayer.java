@@ -22,10 +22,9 @@ public class MusicPlayer {
     private final AtomicInteger playSession = new AtomicInteger(0);
     private static final long PROGRESS_INTERVAL_MS = 200;
 
-    // 全局唯一播放追踪：确保同一时间只有一个 MusicPlayer 实例在播放
-    private static volatile MusicPlayer activeInstance;
+    // Remove static activeInstance to let Service handle mutual exclusion
 
-    // 预加载下一首：在当前歌曲播放期间后台 prepare，切歌时直接 swap，零等待
+    // 预加载下一首
     private MediaPlayer nextPlayer;
     private String preloadedPath;
     private volatile boolean preloadReady;
@@ -42,7 +41,6 @@ public class MusicPlayer {
         mediaPlayer = createNewMediaPlayer();
     }
 
-    /** 创建新的 MediaPlayer 实例（不阻塞） */
     private static MediaPlayer createNewMediaPlayer() {
         MediaPlayer mp = new MediaPlayer();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -64,27 +62,15 @@ public class MusicPlayer {
             if (path == null || path.isEmpty()) throw new IOException("无效路径");
             this.currentPath = path;
 
-            // 停止其他 MusicPlayer 实例的播放（全局唯一播放保证）
-            if (activeInstance != null && activeInstance != this) {
-                activeInstance.stop();
-            }
-            activeInstance = this;
-
-            // 新播放会话，使旧回调自动失效
             final int session = playSession.incrementAndGet();
-
-            // 取消任何进行中的预加载
             cancelPreload();
             stopProgressUpdates();
 
-            // 旧 player 在后台线程释放，不阻塞主线程
             final MediaPlayer oldPlayer = mediaPlayer;
             isPrepared = false;
 
             mediaPlayer = createNewMediaPlayer();
             final MediaPlayer newPlayer = mediaPlayer;
-            
-            // 设置唤醒模式，保证后台播放时 CPU 不进入休眠
             newPlayer.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK);
 
             if (oldPlayer != null) {
@@ -96,7 +82,6 @@ public class MusicPlayer {
                 }).start();
             }
 
-            // 使用 FileDescriptor 加载本地文件，比 setDataSource(String) 快
             File file = new File(path);
             RandomAccessFile raf = new RandomAccessFile(file, "r");
             try {
@@ -107,7 +92,7 @@ public class MusicPlayer {
             newPlayer.prepareAsync();
 
             newPlayer.setOnPreparedListener(mp -> {
-                if (playSession.get() != session) return; // 已被新播放覆盖
+                if (playSession.get() != session) return;
                 isPrepared = true;
                 try {
                     mp.start();
@@ -136,10 +121,6 @@ public class MusicPlayer {
         }
     }
 
-    /**
-     * 后台预加载下一首歌曲（调用 prepareAsync，不播放）。
-     * 在当前歌曲开始播放后调用，为下一次切歌做准备。
-     */
     public void preloadNext(String path) {
         if (path == null || path.equals(preloadedPath)) return;
         cancelPreload();
@@ -166,23 +147,15 @@ public class MusicPlayer {
         }
     }
 
-    /**
-     * 若下一首已预加载完成且路径匹配，立即 swap 开始播放。
-     * 返回歌曲时长（ms），失败返回 -1。
-     * 注意：不调用 onPrepared 回调，由调用方自行更新 UI。
-     */
     public int trySwapToPreloaded(String path) {
         if (!preloadReady || nextPlayer == null || !path.equals(preloadedPath)) return -1;
         this.currentPath = path;
-
         final int session = playSession.incrementAndGet();
         stopProgressUpdates();
 
-        // 释放当前正在播放的 player（后台）
         final MediaPlayer oldPlayer = mediaPlayer;
         isPrepared = false;
 
-        // 提升预加载 player 为主 player
         mediaPlayer = nextPlayer;
         nextPlayer = null;
         preloadedPath = null;
@@ -195,7 +168,7 @@ public class MusicPlayer {
         }
 
         final MediaPlayer promoted = mediaPlayer;
-        promoted.setOnPreparedListener(null); // 清除预加载阶段的 listener
+        promoted.setOnPreparedListener(null);
         promoted.setOnCompletionListener(null);
         promoted.setOnErrorListener(null);
 
@@ -226,7 +199,6 @@ public class MusicPlayer {
         return duration;
     }
 
-    /** 取消预加载，释放 nextPlayer */
     public void cancelPreload() {
         if (nextPlayer != null) {
             final MediaPlayer np = nextPlayer;
@@ -239,9 +211,7 @@ public class MusicPlayer {
         preloadReady = false;
     }
 
-    public boolean isPrepared() {
-        return isPrepared;
-    }
+    public boolean isPrepared() { return isPrepared; }
 
     public void pause() {
         if (isPrepared && mediaPlayer != null) {
@@ -282,44 +252,31 @@ public class MusicPlayer {
 
     public boolean isPlaying() {
         if (isPrepared && mediaPlayer != null) {
-            try {
-                return mediaPlayer.isPlaying();
-            } catch (Exception e) {
-                return false;
-            }
+            try { return mediaPlayer.isPlaying(); } catch (Exception e) { return false; }
         }
         return false;
     }
 
     public int getCurrentPosition() {
         if (isPrepared && mediaPlayer != null) {
-            try {
-                return mediaPlayer.getCurrentPosition();
-            } catch (Exception ignored) {}
+            try { return mediaPlayer.getCurrentPosition(); } catch (Exception ignored) {}
         }
         return 0;
     }
 
     public int getDuration() {
         if (isPrepared && mediaPlayer != null) {
-            try {
-                return mediaPlayer.getDuration();
-            } catch (Exception ignored) {}
+            try { return mediaPlayer.getDuration(); } catch (Exception ignored) {}
         }
         return 0;
     }
 
-    public String getCurrentPath() {
-        return currentPath;
-    }
+    public String getCurrentPath() { return currentPath; }
 
     public void release() {
         isPrepared = false;
         stopProgressUpdates();
         cancelPreload();
-        if (activeInstance == this) {
-            activeInstance = null;
-        }
         if (mediaPlayer != null) {
             try {
                 mediaPlayer.release();
@@ -328,7 +285,6 @@ public class MusicPlayer {
         }
     }
 
-    /** 使用 Handler 替代线程轮询，更省电、更精确 */
     private final Runnable progressRunnable = new Runnable() {
         @Override
         public void run() {

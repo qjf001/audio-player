@@ -98,6 +98,7 @@ public class TagPlayerActivity extends AppCompatActivity {
     private boolean isShuffle = false;
     private boolean isSearchVisible = false;
     private boolean isTagPlayerActive = false;
+    private android.database.ContentObserver volumeObserver;
 
     @Override
     protected void attachBaseContext(Context newBase) {
@@ -255,16 +256,34 @@ public class TagPlayerActivity extends AppCompatActivity {
         });
 
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        seekVolume.setMax(audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
-        seekVolume.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        final int maxMusicVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        seekVolume.setMax(100);
+        seekVolume.setProgress(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) * 100 / Math.max(1, maxMusicVol));
         seekVolume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, progress, 0);
+                if (fromUser) {
+                    int vol = (int) (progress * (float) maxMusicVol / 100f);
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, vol, 0);
+                }
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
+
+        // Listen for system volume changes
+        volumeObserver = new android.database.ContentObserver(new android.os.Handler()) {
+            @Override
+            public void onChange(boolean selfChange) {
+                super.onChange(selfChange);
+                if (audioManager != null && seekVolume != null) {
+                    int currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+                    int maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                    seekVolume.setProgress(currentVol * 100 / Math.max(1, maxVol));
+                }
+            }
+        };
+        getContentResolver().registerContentObserver(android.provider.Settings.System.CONTENT_URI, true, volumeObserver);
 
         sheetBehavior.addBottomSheetCallback(new BottomSheetBehavior.BottomSheetCallback() {
             @Override
@@ -780,6 +799,9 @@ public class TagPlayerActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         stopProgressUpdater();
+        if (volumeObserver != null) {
+            getContentResolver().unregisterContentObserver(volumeObserver);
+        }
         if (serviceBound) {
             if (musicService != null) { musicService.setCallback(null); musicService.setTagPlaybackListener(null); }
             try { unbindService(serviceConnection); } catch (Exception ignored) {}
